@@ -1,0 +1,13 @@
+name: psx
+version: 0.1.0
+
+authors:
+  - Ergo Adams <ergoa2001@gmail.com>
+
+targets:
+  psx:
+    main: src/psx.cr
+
+crystal: 0.35.1
+
+license: MIT
