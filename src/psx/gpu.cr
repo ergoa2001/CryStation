@@ -211,11 +211,29 @@ struct Gpu
   end
 
   def gp0_quad_texture_blend_opaque
-    puts "Draw quad texture blending"
+    positions = [
+      @renderer.position_from_gp0(@gp0_command.word(1)),
+      @renderer.position_from_gp0(@gp0_command.word(3)),
+      @renderer.position_from_gp0(@gp0_command.word(5)),
+      @renderer.position_from_gp0(@gp0_command.word(7))
+    ]
+    colors = Array.new(4, [0x80_u16, 0x00_u16, 0x00_u16])
+    @renderer.push_quad(positions, colors)
   end
 
   def gp0_triangle_shaded_opaque
-    puts "Draw triangle shaded"
+    positions = [
+      @renderer.position_from_gp0(@gp0_command.word(1)),
+      @renderer.position_from_gp0(@gp0_command.word(3)),
+      @renderer.position_from_gp0(@gp0_command.word(5))
+    ]
+
+    colors = [
+      @renderer.color_from_gp0(@gp0_command.word(0)),
+      @renderer.color_from_gp0(@gp0_command.word(2)),
+      @renderer.color_from_gp0(@gp0_command.word(4))
+    ]
+    @renderer.push_triangle(positions, colors)
   end
 
   def gp0_image_store
@@ -226,7 +244,19 @@ struct Gpu
   end
 
   def gp0_quad_shaded_opaque
-    puts "Draw quad shaded"
+    positions = [
+      @renderer.position_from_gp0(@gp0_command.word(1)),
+      @renderer.position_from_gp0(@gp0_command.word(3)),
+      @renderer.position_from_gp0(@gp0_command.word(5)),
+      @renderer.position_from_gp0(@gp0_command.word(7))
+    ]
+    colors = [
+      @renderer.color_from_gp0(@gp0_command.word(0)),
+      @renderer.color_from_gp0(@gp0_command.word(2)),
+      @renderer.color_from_gp0(@gp0_command.word(4)),
+      @renderer.color_from_gp0(@gp0_command.word(6))
+    ]
+    @renderer.push_quad(positions, colors)
   end
 
   def gp1_display_enable(val : UInt32)
@@ -247,7 +277,14 @@ struct Gpu
   end
 
   def gp0_quad_mono_opaque
-    puts "Draw quad"
+    positions = [
+      @renderer.position_from_gp0(@gp0_command.word(1)),
+      @renderer.position_from_gp0(@gp0_command.word(2)),
+      @renderer.position_from_gp0(@gp0_command.word(3)),
+      @renderer.position_from_gp0(@gp0_command.word(4))
+    ]
+    colors = Array.new(4, @renderer.color_from_gp0(@gp0_command.word(0)))
+    @renderer.push_quad(positions, colors)
   end
 
   def gp0_nop
@@ -288,6 +325,8 @@ struct Gpu
     y = ((val >> 11) & 0x7FF).to_u16
     @drawing_x_offset = (x << 5).to_i16! >> 5
     @drawing_y_offset = (y << 5).to_i16! >> 5
+
+    @renderer.draw
   end
 
   def gp0_drawing_area_bottom_right

@@ -11,11 +11,7 @@ targets:
 crystal: 0.35.1
 
 dependencies:
-  sdl:
-    github: ysbaddaden/sdl.cr
-  glfw:
-    github: doughsay/crystal-glfw
-  gl:
-    github: doughsay/crystal-gl
-
+  crsfml:
+    github: oprypin/crsfml
+    version: 2.5.1
 license: MIT

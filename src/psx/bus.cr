@@ -129,7 +129,6 @@ class Bus
   def dma_reg(offset : UInt32) : UInt32
     major = (offset & 0x70) >> 4
     minor = offset & 0xF
-    puts "read major #{major}, minor #{minor}"
     case major
     when 0..6
       channel = @dma.channel(@dma.from_index(major))
@@ -176,7 +175,6 @@ class Bus
     elsif offset = contains(addr_abs, DMA_RANGE)
       dma_reg(offset)
     elsif offset = contains(addr_abs, GPU_RANGE)
-      puts "GPU read 0x#{offset.to_s(16)}"
       case offset
       when 0 then @gpu.read
       when 4 then 0x1C000000_u32
@@ -220,9 +218,6 @@ class Bus
 
   def store32(addr : UInt32, val : UInt32)
     addr_abs = mask_region(addr)
-    #if addr % 4 != 0
-    #  raise "Unaligned store32 address: #{addr.to_s(16)}"
-    #end
     if offset = contains(addr_abs, MEMCONTROL_RANGE)
       case offset
       when 0
