@@ -1,3 +1,5 @@
+require "sdl"
+
 class CPU
   @bus : Bus
   @function : UInt32
@@ -102,8 +104,8 @@ class CPU
   end
 
   def imm_se(instruction : UInt32)
-    v = instruction.to_u32 & 0xFFFF
-    ((v ^ 0x8000) &- 0x8000) & 0xFFFFFFFF
+    v = (instruction & 0xFFFF).to_i16!
+    v.to_u32
   end
 
   def branch(offset : UInt32)
@@ -116,6 +118,11 @@ class CPU
   end
 
   def run_next_instruction
+    while event = SDL::Event.poll
+      case event
+      when SDL::Event::Quit then exit 0
+      end
+    end
     pc = @pc
     instruction = load32(pc)
     @delaybool = @branchbool

@@ -10,4 +10,12 @@ targets:
 
 crystal: 0.35.1
 
+dependencies:
+  sdl:
+    github: ysbaddaden/sdl.cr
+  glfw:
+    github: doughsay/crystal-glfw
+  gl:
+    github: doughsay/crystal-gl
+
 license: MIT
