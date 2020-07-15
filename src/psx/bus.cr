@@ -6,19 +6,19 @@ require "./gpu"
 class Bus
   REGION_MASK = [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x7FFFFFFF, 0x1FFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF]
 
-  BIOS_RANGE = {0x1FC00000, 512*1024}
-  MEMCONTROL_RANGE = {0x1F801000, 36}
-  RAMSIZE_RANGE = {0x1F801060, 4}
-  CACHECONTROL_RANGE = {0xFFFE0130, 4}
-  RAM_RANGE = {0x00000000, 2*1024*1024}
-  SPU_RANGE = {0x1F801C00, 640}
-  EXPANSION2_RANGE = {0x1F802000, 66}
-  EXPANSION1_RANGE = {0x1F000000, 512*1024}
-  IRQCONTROL_RANGE = {0x1F801070, 8}
-  TIMERS_RANGE = {0x1F801100, 0x30}
-  DMA_RANGE = {0x1F801080, 0x80}
-  GPU_RANGE = {0x1F801810, 8}
-  #CDROM_RANGE = {0x1f801800, 0x4}
+  BIOS_RANGE = (0x1FC00000...0x1FC80000)
+  MEMCONTROL_RANGE = (0x1F801000...0x1F801024)
+  RAMSIZE_RANGE = (0x1F801060...0x1F801064)
+  CACHECONTROL_RANGE = (0xFFFE0130...0xFFFE0134)
+  RAM_RANGE = (0x00000000...0x00200000)
+  SPU_RANGE = (0x1F801C00...0x1F801E80)
+  EXPANSION2_RANGE = (0x1F802000...0x1F802042)
+  EXPANSION1_RANGE = (0x1F000000...0x1F080000)
+  IRQCONTROL_RANGE = (0x1F801070...0x1F801078)
+  TIMERS_RANGE = (0x1F801100...0x1F801130)
+  DMA_RANGE = (0x1F801080...0x1F801100)
+  GPU_RANGE = (0x1F801810...0x1F801818)
+  CDROM_RANGE = (0x1f801800...0x1f801804)
 
   def initialize
     @bios = Bios.new
@@ -56,11 +56,7 @@ class Bus
 
   def do_dma_block(port)
     channel = @dma.channel(port)
-    if channel.step.value == 0
-      increment = 4
-    else
-      increment = -4
-    end
+    increment = channel.step.value == 0 ? 4 : -4
     addr = channel.base
     remsz = channel.transfer_size
     while remsz > 0
@@ -148,12 +144,6 @@ class Bus
     end
   end
 
-  def contains(addr : UInt32, range) : Nil | UInt32
-    if addr >= range[0] && addr < (range[0] + range[1])
-      addr - range[0]
-    end
-  end
-
   def mask_region(addr : UInt32) : UInt32
     index = addr >> 29
     addr & REGION_MASK[index]
@@ -165,24 +155,21 @@ class Bus
       raise "Unaligned load32 address: #{addr.to_s(16)}"
     end
 
-    if offset = contains(addr_abs, BIOS_RANGE)
-      @bios.load32(offset)
-    elsif offset = contains(addr_abs, RAM_RANGE)
-      @ram.load32(offset)
-    elsif offset = contains(addr_abs, IRQCONTROL_RANGE)
-      puts "IRQCONTROL read 0x#{offset.to_s(16)}"
-      0x00_u32
-    elsif offset = contains(addr_abs, DMA_RANGE)
-      dma_reg(offset)
-    elsif offset = contains(addr_abs, GPU_RANGE)
+    case addr_abs
+    when BIOS_RANGE then @bios.load32(addr_abs - BIOS_RANGE.begin)
+    when RAM_RANGE then @ram.load32(addr_abs - RAM_RANGE.begin)
+    when IRQCONTROL_RANGE then 0x00_u32 # puts "IRQCONTROL read 0x#{offset.to_s(16)}"
+    when DMA_RANGE then dma_reg(addr_abs - DMA_RANGE.begin)
+    when GPU_RANGE
+      offset = addr_abs - GPU_RANGE.begin
       case offset
       when 0 then @gpu.read
       when 4 then 0x1C000000_u32
       else
         0x00_u32
       end
-    elsif offset = contains(addr_abs, TIMERS_RANGE)
-      0x00_u32
+    when TIMERS_RANGE then 0x00_u32
+    when CDROM_RANGE then 0x00_u32 #puts "Unhandled CDROM read"
     else
       raise "unhandled fetch32 at address #{addr.to_s(16)}"
     end
@@ -190,14 +177,11 @@ class Bus
 
   def load16(addr : UInt32) : UInt16
     addr_abs = mask_region(addr)
-    if offset = contains(addr_abs, SPU_RANGE)
-      puts "Unhandled read from SPU register 0x#{addr_abs.to_s(16)}"
-      0x00_u16
-    elsif offset = contains(addr_abs, RAM_RANGE)
-      @ram.load16(offset)
-    elsif offset = contains(addr_abs, IRQCONTROL_RANGE)
-      puts "IRQ control read offset"
-      0x00_u16
+    case addr_abs
+    when SPU_RANGE then 0x00_u16 # puts "Unhandled read from SPU register 0x#{addr_abs.to_s(16)}"
+    when RAM_RANGE then @ram.load16(addr_abs - RAM_RANGE.begin)
+    when IRQCONTROL_RANGE then 0x00_u16 # puts "IRQ control read offset"
+    when CDROM_RANGE then 0x00_u16 #puts "Unhandled CDROM read"
     else
       raise "unhandled load16 at address 0x#{addr.to_s(16)}"
     end
@@ -205,12 +189,11 @@ class Bus
 
   def load8(addr : UInt32) : UInt8
     addr_abs = mask_region(addr)
-    if offset = contains(addr_abs, BIOS_RANGE)
-      @bios.load8(offset)
-    elsif offset = contains(addr_abs, EXPANSION1_RANGE)
-      0xFF_u8
-    elsif offset = contains(addr_abs, RAM_RANGE)
-      @ram.load8(offset)
+    case addr_abs
+    when BIOS_RANGE then @bios.load8(addr_abs - BIOS_RANGE.begin)
+    when EXPANSION1_RANGE then 0xFF_u8
+    when RAM_RANGE then @ram.load8(addr_abs - RAM_RANGE.begin)
+    when CDROM_RANGE then 0x00_u8 #puts "Unhandled CDROM read"
     else
       raise "unhandled load8 at address 0x#{addr_abs.to_s(16)}"
     end
@@ -218,7 +201,9 @@ class Bus
 
   def store32(addr : UInt32, val : UInt32)
     addr_abs = mask_region(addr)
-    if offset = contains(addr_abs, MEMCONTROL_RANGE)
+    case addr_abs
+    when MEMCONTROL_RANGE
+      offset = addr_abs - MEMCONTROL_RANGE.begin
       case offset
       when 0
         if val != 0x1F000000
@@ -231,24 +216,20 @@ class Bus
       else
         puts "Unhandled write to MEMCONTROL register"
       end
-    elsif offset = contains(addr_abs, RAMSIZE_RANGE)
-      puts "RAMSIZE write"
-    elsif offset = contains(addr_abs, RAM_RANGE)
-      @ram.store32(offset, val)
-    elsif offset = contains(addr_abs, CACHECONTROL_RANGE)
-      puts "Unhandled CACHECONTROL write"
-    elsif offset = contains(addr_abs, IRQCONTROL_RANGE)
-      puts "IRQ control write #{offset}, #{val}"
-    elsif offset = contains(addr_abs, DMA_RANGE)
-      set_dma_reg(offset, val)
-    elsif offset = contains(addr_abs, GPU_RANGE)
+    when RAMSIZE_RANGE then puts "RAMSIZE write"
+    when RAM_RANGE then @ram.store32(addr_abs - RAM_RANGE.begin, val)
+    when CACHECONTROL_RANGE then puts "Unhandled CACHECONTROL write"
+    when IRQCONTROL_RANGE then puts "IRQ control write #{addr_abs}, #{val}"
+    when DMA_RANGE then set_dma_reg(addr_abs - DMA_RANGE.begin, val)
+    when GPU_RANGE
+      offset = addr_abs - GPU_RANGE.begin
       case offset
       when 0 then @gpu.gp0(val)
       when 4 then @gpu.gp1(val)
       else raise "GPU write offset 0x#{offset.to_s(16)}, val 0x#{val.to_s(16)}"
       end
-    elsif offset = contains(addr_abs, TIMERS_RANGE)
-      puts "unhandled write to timer register 0x#{offset.to_s(16)}, 0x#{val.to_s(16)}"
+    when TIMERS_RANGE then puts "unhandled write to timer register 0x#{addr_abs.to_s(16)}, 0x#{val.to_s(16)}"
+    when CDROM_RANGE then puts "Unhandled CDROM write"
     else
       raise "unhandled store32 into address #{addr_abs.to_s(16)}"
     end
@@ -256,17 +237,12 @@ class Bus
 
   def store16(addr : UInt32, val : UInt16)
     addr_abs = mask_region(addr)
-    if addr % 2 != 0
-      raise "Unaligned store16 addr 0x#{addr.to_s(16)}"
-    end
-    if offset = contains(addr_abs, SPU_RANGE)
-      puts "Unhandled write to SPU register 0x#{addr.to_s(16)}"
-    elsif offset = contains(addr_abs, TIMERS_RANGE)
-      puts "Unhandled write to timer register 0x#{offset.to_s(16)}"
-    elsif offset = contains(addr_abs, RAM_RANGE)
-      @ram.store16(offset, val)
-    elsif offset = contains(addr_abs, IRQCONTROL_RANGE)
-      puts "IRQ control write #{offset}, #{val}"
+    case addr_abs
+    when SPU_RANGE then #puts "Unhandled write to SPU register 0x#{addr.to_s(16)}"
+    when TIMERS_RANGE then puts "Unhandled write to timer register 0x#{addr_abs.to_s(16)}"
+    when RAM_RANGE then @ram.store16(addr_abs - RAM_RANGE.begin, val)
+    when IRQCONTROL_RANGE then puts "IRQ control write #{addr_abs - IRQCONTROL_RANGE.begin}, #{val}"
+    when CDROM_RANGE then puts "Unhandled CDROM write"
     else
       raise "unhandled store16 into address 0x#{addr_abs.to_s(16)}"
     end
@@ -274,10 +250,10 @@ class Bus
 
   def store8(addr : UInt32, val : UInt8)
     addr_abs = mask_region(addr)
-    if offset = contains(addr_abs, EXPANSION2_RANGE)
-      puts("Unhandled write to expansion 2 register 0x#{offset.to_s(16)}")
-    elsif offset = contains(addr_abs, RAM_RANGE)
-      @ram.store8(offset, val)
+    case addr_abs
+    when EXPANSION2_RANGE then puts "Unhandled write to expansion 2 register 0x#{addr_abs.to_s(16)}"
+    when RAM_RANGE then @ram.store8(addr_abs - RAM_RANGE.begin, val)
+    when CDROM_RANGE then puts "Unhandled CDROM write"
     else
       raise "unhandled store8 into address 0x#{addr.to_s(16)}"
     end

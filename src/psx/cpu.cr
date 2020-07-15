@@ -2,23 +2,11 @@ require "sdl"
 
 class CPU
   @bus : Bus
-  @function : UInt32
-  @t : UInt32
-  @imm : UInt32
-  @s : UInt32
-  @d : UInt32
-  @subfunction : UInt32
-  @shift : UInt32
   @regs : Array(UInt32)
-  @next_instruction : UInt32
-  @sr : UInt32
   @out_regs : Array(UInt32)
   @hi : UInt32
   @lo : UInt32
   @next_pc : UInt32
-  @current_pc : UInt32
-  @cause : UInt32
-  @epc : UInt32
 
   SYSCALL = 0x8_u32
   OVERFLOW = 0xC_u32
@@ -32,28 +20,26 @@ class CPU
     @pc = 0xBFC00000_u32
     @next_pc = @pc &+ 4
     @bus = bus
-    @function = 0
-    @t = 0
-    @imm = 0
-    @s = 0
-    @d = 0
+    @function = 0_u32
+    @t = 0_u32
+    @imm = 0_u32
+    @s = 0_u32
+    @d = 0_u32
     @hi = 0xDEADBEEF_u32
     @lo = 0xDEADBEEF_u32
-    @subfunction = 0
-    @shift = 0
+    @subfunction = 0_u32
+    @shift = 0_u32
     @regs = Array.new 32, 0xDEADBEEF_u32
     @regs[0] = 0
     @out_regs = Array.new 32, 0_u32
     @load = {0_u32, 0_u32}
-    @next_instruction = 0
-    @sr = 0
-    @current_pc = 0
-    @cause = 0
-    @epc = 0
+    @next_instruction = 0_u32
+    @sr = 0_u32
+    @current_pc = 0_u32
+    @cause = 0_u32
+    @epc = 0_u32
     @branchbool = false
     @delaybool = false
-    @debug = false
-    #@logfile = File.open("logfilecr.txt", "w")
   end
 
   def exception(cause)
@@ -118,11 +104,6 @@ class CPU
   end
 
   def run_next_instruction
-    while event = SDL::Event.poll
-      case event
-      when SDL::Event::Quit then exit 0
-      end
-    end
     pc = @pc
     instruction = load32(pc)
     @delaybool = @branchbool
@@ -150,9 +131,6 @@ class CPU
   end
 
   def decode_and_execute(instruction : UInt32)
-    if @debug == true
-      #puts "Instruction 0x#{instruction.to_s(16)}"
-    end
     @function = instruction >> 26
     @t = (instruction >> 16) & 0x1F
     @imm = instruction & 0xFFFF
@@ -160,18 +138,6 @@ class CPU
     @d = (instruction >> 11) & 0x1F
     @subfunction = instruction & 0x3F
     @shift = (instruction >> 6) & 0x1F
-
-
-    #@logfile.write((@pc - 4).to_s(16).to_slice)
-    #@logfile.write(" ".to_slice)
-    #@logfile.write(instruction.to_s(16).to_slice)
-    #@logfile.write(" ".to_slice)
-    #@logfile.write(@s.to_s.to_slice)
-    #@logfile.write(" ".to_slice)
-    #@logfile.write(@t.to_s.to_slice)
-    #@logfile.write(" ".to_slice)
-    #@logfile.write(@regs.to_s.to_slice)
-    #@logfile.write("\n".to_slice)
 
     case @function
     when 0b000000

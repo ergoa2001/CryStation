@@ -87,17 +87,4 @@ class Renderer
     end
     @window.display
   end
-
-  def position_from_gp0(val : UInt32)
-    x = val.to_u16!
-    y = (val >> 16).to_u16!
-    [x, y]
-  end
-
-  def color_from_gp0(val : UInt32)
-    r = val.to_u8!
-    g = (val >> 8) .to_u8!
-    b = (val >> 16).to_u8!
-    [r, g, b]
-  end
 end

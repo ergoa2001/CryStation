@@ -111,6 +111,19 @@ struct Gpu
     @renderer = Renderer.new
   end
 
+  def position_from_gp0(val : UInt32)
+    x = val.to_u16!
+    y = (val >> 16).to_u16!
+    [x, y]
+  end
+
+  def color_from_gp0(val : UInt32)
+    r = val.to_u8!
+    g = (val >> 8) .to_u8!
+    b = (val >> 16).to_u8!
+    [r, g, b]
+  end
+
   def status : UInt32
     r = 0_u32
     r |= @page_base_x.to_u32 << 0
@@ -212,10 +225,10 @@ struct Gpu
 
   def gp0_quad_texture_blend_opaque
     positions = [
-      @renderer.position_from_gp0(@gp0_command.word(1)),
-      @renderer.position_from_gp0(@gp0_command.word(3)),
-      @renderer.position_from_gp0(@gp0_command.word(5)),
-      @renderer.position_from_gp0(@gp0_command.word(7))
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(3)),
+      position_from_gp0(@gp0_command.word(5)),
+      position_from_gp0(@gp0_command.word(7))
     ]
     colors = Array.new(4, [0x80_u16, 0x00_u16, 0x00_u16])
     @renderer.push_quad(positions, colors)
@@ -223,15 +236,15 @@ struct Gpu
 
   def gp0_triangle_shaded_opaque
     positions = [
-      @renderer.position_from_gp0(@gp0_command.word(1)),
-      @renderer.position_from_gp0(@gp0_command.word(3)),
-      @renderer.position_from_gp0(@gp0_command.word(5))
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(3)),
+      position_from_gp0(@gp0_command.word(5))
     ]
 
     colors = [
-      @renderer.color_from_gp0(@gp0_command.word(0)),
-      @renderer.color_from_gp0(@gp0_command.word(2)),
-      @renderer.color_from_gp0(@gp0_command.word(4))
+      color_from_gp0(@gp0_command.word(0)),
+      color_from_gp0(@gp0_command.word(2)),
+      color_from_gp0(@gp0_command.word(4))
     ]
     @renderer.push_triangle(positions, colors)
   end
@@ -245,16 +258,16 @@ struct Gpu
 
   def gp0_quad_shaded_opaque
     positions = [
-      @renderer.position_from_gp0(@gp0_command.word(1)),
-      @renderer.position_from_gp0(@gp0_command.word(3)),
-      @renderer.position_from_gp0(@gp0_command.word(5)),
-      @renderer.position_from_gp0(@gp0_command.word(7))
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(3)),
+      position_from_gp0(@gp0_command.word(5)),
+      position_from_gp0(@gp0_command.word(7))
     ]
     colors = [
-      @renderer.color_from_gp0(@gp0_command.word(0)),
-      @renderer.color_from_gp0(@gp0_command.word(2)),
-      @renderer.color_from_gp0(@gp0_command.word(4)),
-      @renderer.color_from_gp0(@gp0_command.word(6))
+      color_from_gp0(@gp0_command.word(0)),
+      color_from_gp0(@gp0_command.word(2)),
+      color_from_gp0(@gp0_command.word(4)),
+      color_from_gp0(@gp0_command.word(6))
     ]
     @renderer.push_quad(positions, colors)
   end
@@ -278,12 +291,12 @@ struct Gpu
 
   def gp0_quad_mono_opaque
     positions = [
-      @renderer.position_from_gp0(@gp0_command.word(1)),
-      @renderer.position_from_gp0(@gp0_command.word(2)),
-      @renderer.position_from_gp0(@gp0_command.word(3)),
-      @renderer.position_from_gp0(@gp0_command.word(4))
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(2)),
+      position_from_gp0(@gp0_command.word(3)),
+      position_from_gp0(@gp0_command.word(4))
     ]
-    colors = Array.new(4, @renderer.color_from_gp0(@gp0_command.word(0)))
+    colors = Array.new(4, color_from_gp0(@gp0_command.word(0)))
     @renderer.push_quad(positions, colors)
   end
 
