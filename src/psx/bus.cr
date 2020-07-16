@@ -6,19 +6,19 @@ require "./gpu"
 class Bus
   REGION_MASK = [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x7FFFFFFF, 0x1FFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF]
 
-  BIOS_RANGE = (0x1FC00000...0x1FC80000)
-  MEMCONTROL_RANGE = (0x1F801000...0x1F801024)
-  RAMSIZE_RANGE = (0x1F801060...0x1F801064)
-  CACHECONTROL_RANGE = (0xFFFE0130...0xFFFE0134)
-  RAM_RANGE = (0x00000000...0x00200000)
-  SPU_RANGE = (0x1F801C00...0x1F801E80)
-  EXPANSION2_RANGE = (0x1F802000...0x1F802042)
-  EXPANSION1_RANGE = (0x1F000000...0x1F080000)
-  IRQCONTROL_RANGE = (0x1F801070...0x1F801078)
-  TIMERS_RANGE = (0x1F801100...0x1F801130)
-  DMA_RANGE = (0x1F801080...0x1F801100)
-  GPU_RANGE = (0x1F801810...0x1F801818)
-  CDROM_RANGE = (0x1f801800...0x1f801804)
+  RAM_RANGE =           (0x00000000...0x00200000)
+  EXPANSION1_RANGE =    (0x1F000000...0x1F080000)
+  MEMCONTROL_RANGE =    (0x1F801000...0x1F801024)
+  RAMSIZE_RANGE =       (0x1F801060...0x1F801064)
+  IRQCONTROL_RANGE =    (0x1F801070...0x1F801078)
+  DMA_RANGE =           (0x1F801080...0x1F801100)
+  TIMERS_RANGE =        (0x1F801100...0x1F801130)
+  CDROM_RANGE =         (0x1F801800...0x1F801804)
+  GPU_RANGE =           (0x1F801810...0x1F801818)
+  SPU_RANGE =           (0x1F801C00...0x1F801E80)
+  EXPANSION2_RANGE =    (0x1F802000...0x1F802042)
+  BIOS_RANGE =          (0x1FC00000...0x1FC80000)
+  CACHECONTROL_RANGE =  (0xFFFE0130...0xFFFE0134)
 
   def initialize
     @bios = Bios.new
@@ -169,7 +169,7 @@ class Bus
         0x00_u32
       end
     when TIMERS_RANGE then 0x00_u32
-    when CDROM_RANGE then 0x00_u32 #puts "Unhandled CDROM read"
+    when CDROM_RANGE then 0xFFFFFFFF_u32 #puts "Unhandled CDROM read"
     else
       raise "unhandled fetch32 at address #{addr.to_s(16)}"
     end
@@ -181,7 +181,7 @@ class Bus
     when SPU_RANGE then 0x00_u16 # puts "Unhandled read from SPU register 0x#{addr_abs.to_s(16)}"
     when RAM_RANGE then @ram.load16(addr_abs - RAM_RANGE.begin)
     when IRQCONTROL_RANGE then 0x00_u16 # puts "IRQ control read offset"
-    when CDROM_RANGE then 0x00_u16 #puts "Unhandled CDROM read"
+    when CDROM_RANGE then 0xFFFF_u16 #puts "Unhandled CDROM read"
     else
       raise "unhandled load16 at address 0x#{addr.to_s(16)}"
     end
@@ -193,7 +193,7 @@ class Bus
     when BIOS_RANGE then @bios.load8(addr_abs - BIOS_RANGE.begin)
     when EXPANSION1_RANGE then 0xFF_u8
     when RAM_RANGE then @ram.load8(addr_abs - RAM_RANGE.begin)
-    when CDROM_RANGE then 0x00_u8 #puts "Unhandled CDROM read"
+    when CDROM_RANGE then 0xFF_u8 #puts "Unhandled CDROM read"
     else
       raise "unhandled load8 at address 0x#{addr_abs.to_s(16)}"
     end

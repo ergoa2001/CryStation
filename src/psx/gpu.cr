@@ -21,11 +21,55 @@ struct CommandBuffer
   end
 end
 
+struct ImageBuffer
+  @buffer : Array(UInt16)
+  VRAM_SIZE_PIXELS = 1024 * 512
+  def initialize
+    @buffer = Array.new(VRAM_SIZE_PIXELS, 0_u16)
+    @top_left = {0, 0}
+    @resolution = {0, 0}
+    @index = 0
+  end
+
+  def clear
+    @top_left = {0, 0}
+    @resolution = {0, 0}
+    @index = 0
+    @buffer = Array.new(VRAM_SIZE_PIXELS, 0_u16)
+  end
+
+  def top_left
+    @top_left
+  end
+
+  def resolution
+    @resolution
+  end
+
+  def getbuffer
+    len = @resolution[0] * @resolution[1]
+    @buffer[0, len]
+  end
+
+  def reset(x : UInt16, y : UInt16, width : UInt16, height : UInt16)
+    @top_left = {x, y}
+    @resolution = {width, height}
+    @index = 0
+  end
+
+  def push_gp0_word(word : UInt32)
+    @buffer[@index] = word.to_u16!
+    @index += 1
+    @buffer[@index] = (word >> 16).to_u16!
+    @index += 1
+  end
+end
+
 struct Gpu
   enum TextureDepth : UInt32
     T4Bit
     T8Bit
-    T15Bit
+    T16Bit
   end
   enum Field : UInt32
     Bottom
@@ -109,19 +153,30 @@ struct Gpu
     @gp0_mode = Gp0Mode::Command
 
     @renderer = Renderer.new
+    @load_buffer = ImageBuffer.new
   end
 
   def position_from_gp0(val : UInt32)
     x = val.to_u16!
     y = (val >> 16).to_u16!
-    [x, y]
+    {x, y}
   end
 
   def color_from_gp0(val : UInt32)
     r = val.to_u8!
     g = (val >> 8) .to_u8!
     b = (val >> 16).to_u8!
-    [r, g, b]
+    {r, g, b}
+  end
+
+  def tex_from_gp0(val : UInt32)
+    x = val & 0xFF
+    y = (val >> 8) & 0xFF
+    bx = @page_base_x.to_u16 << 6
+    by = @page_base_y.to_u16 << 8
+    tx = bx + x #// 4
+    ty = by + y
+    {tx, ty}
   end
 
   def status : UInt32
@@ -191,7 +246,10 @@ struct Gpu
         @gp0_command_method.call
       end
     when Gp0Mode::ImageLoad
+      @load_buffer.push_gp0_word(val)
       if @gp0_words_remaining == 0
+        @renderer.load_image(@load_buffer.top_left, @load_buffer.resolution, @load_buffer.getbuffer)
+        @load_buffer.clear
         @gp0_mode = Gp0Mode::Command
       end
     end
@@ -230,8 +288,17 @@ struct Gpu
       position_from_gp0(@gp0_command.word(5)),
       position_from_gp0(@gp0_command.word(7))
     ]
-    colors = Array.new(4, [0x80_u16, 0x00_u16, 0x00_u16])
-    @renderer.push_quad(positions, colors)
+    color = color_from_gp0(@gp0_command.word(0))
+    @renderer.set_clut(@gp0_command.word(2) >> 16)
+    @renderer.set_draw_params(@gp0_command.word(4) >> 16)
+
+    textures = [
+      tex_from_gp0(@gp0_command.word(2)),
+      tex_from_gp0(@gp0_command.word(4)),
+      tex_from_gp0(@gp0_command.word(6)),
+      tex_from_gp0(@gp0_command.word(8))
+    ]
+    @renderer.draw_texture(positions, textures)
   end
 
   def gp0_triangle_shaded_opaque
@@ -246,7 +313,12 @@ struct Gpu
       color_from_gp0(@gp0_command.word(2)),
       color_from_gp0(@gp0_command.word(4))
     ]
-    @renderer.push_triangle(positions, colors)
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(colors[0][0], colors[0][1], colors[0][2])),
+      SF::Vertex.new(SF.vector2(positions[1][0], positions[1][1]), SF.color(colors[1][0], colors[1][1], colors[1][2])),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1]), SF.color(colors[2][0], colors[2][1], colors[2][2]))
+    ]
+    @renderer.push_triangle(vertices)
   end
 
   def gp0_image_store
@@ -269,7 +341,13 @@ struct Gpu
       color_from_gp0(@gp0_command.word(4)),
       color_from_gp0(@gp0_command.word(6))
     ]
-    @renderer.push_quad(positions, colors)
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(colors[0][0], colors[0][1], colors[0][2])),
+      SF::Vertex.new(SF.vector2(positions[1][0], positions[1][1]), SF.color(colors[1][0], colors[1][1], colors[1][2])),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1]), SF.color(colors[2][0], colors[2][1], colors[2][2])),
+      SF::Vertex.new(SF.vector2(positions[3][0], positions[3][1]), SF.color(colors[3][0], colors[3][1], colors[3][2]))
+    ]
+    @renderer.push_quad(vertices)
   end
 
   def gp1_display_enable(val : UInt32)
@@ -277,12 +355,17 @@ struct Gpu
   end
 
   def gp0_image_load
+    pos = @gp0_command.word(1)
+    x = pos & 0xFFFF
+    y = pos >> 16
+
     res = @gp0_command.word(2)
     width = res & 0xFFFF
     height = res >> 16
     imgsize = width * height
     imgsize = (imgsize + 1) & ~1
     @gp0_words_remaining = imgsize // 2
+    @load_buffer.reset(x.to_u16, y.to_u16, width.to_u16, height.to_u16)
     @gp0_mode = Gp0Mode::ImageLoad
   end
 
@@ -297,7 +380,13 @@ struct Gpu
       position_from_gp0(@gp0_command.word(4))
     ]
     colors = Array.new(4, color_from_gp0(@gp0_command.word(0)))
-    @renderer.push_quad(positions, colors)
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(colors[0][0], colors[0][1], colors[0][2])),
+      SF::Vertex.new(SF.vector2(positions[1][0], positions[1][1]), SF.color(colors[1][0], colors[1][1], colors[1][2])),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1]), SF.color(colors[2][0], colors[2][1], colors[2][2])),
+      SF::Vertex.new(SF.vector2(positions[3][0], positions[3][1]), SF.color(colors[3][0], colors[3][1], colors[3][2]))
+    ]
+    @renderer.push_quad(vertices)
   end
 
   def gp0_nop
@@ -430,7 +519,7 @@ struct Gpu
     @texture_depth = case (val >> 7) & 3
     when 0 then TextureDepth::T4Bit
     when 1 then TextureDepth::T8Bit
-    when 2 then TextureDepth::T15Bit
+    when 2 then TextureDepth::T16Bit
     else raise "Unhandled texture depth #{(val >> 7) & 3}"
     end
     @dithering = ((val >> 9) & 1) != 0
