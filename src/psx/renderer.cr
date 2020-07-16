@@ -167,11 +167,10 @@ class Renderer
       (0...3).each do |i|
         triangle[i] = @vertices[j*3 + i]
       end
-
       @window.draw triangle
     end
-
     @window.draw @sprite
     @window.display
   end
+  @nvertices = 0
 end
