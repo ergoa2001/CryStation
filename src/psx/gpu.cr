@@ -109,7 +109,8 @@ struct Gpu
 
   @gp0_command_method : Proc(Void)
 
-  def initialize
+  def initialize(counters : Counters)
+    @counters = counters
     @page_base_x = 0_u8
     @page_base_y = 0_u8
     @semi_transparency = 0_u8
@@ -167,16 +168,6 @@ struct Gpu
     g = (val >> 8) .to_u8!
     b = (val >> 16).to_u8!
     {r, g, b}
-  end
-
-  def tex_from_gp0(val : UInt32)
-    x = val & 0xFF
-    y = (val >> 8) & 0xFF
-    bx = @page_base_x.to_u16 << 6
-    by = @page_base_y.to_u16 << 8
-    tx = bx + x #// 4
-    ty = by + y
-    {tx, ty}
   end
 
   def status : UInt32
@@ -292,13 +283,7 @@ struct Gpu
     @renderer.set_clut(@gp0_command.word(2) >> 16)
     @renderer.set_draw_params(@gp0_command.word(4) >> 16)
 
-    textures = [
-      tex_from_gp0(@gp0_command.word(2)),
-      tex_from_gp0(@gp0_command.word(4)),
-      tex_from_gp0(@gp0_command.word(6)),
-      tex_from_gp0(@gp0_command.word(8))
-    ]
-    @renderer.draw_texture(positions, textures)
+    @renderer.draw_textures(positions)
   end
 
   def gp0_triangle_shaded_opaque
@@ -429,6 +414,7 @@ struct Gpu
     @drawing_y_offset = (y << 5).to_i16! >> 5
 
     @renderer.draw
+    @counters.frame.increment
   end
 
   def gp0_drawing_area_bottom_right

@@ -20,11 +20,17 @@ class Bus
   BIOS_RANGE =          (0x1FC00000...0x1FC80000)
   CACHECONTROL_RANGE =  (0xFFFE0130...0xFFFE0134)
 
-  def initialize
+  def initialize(irq : InterruptState, counters : Counters,)
+    @counters = counters
+    @irq = irq
     @bios = Bios.new
     @ram = Ram.new
     @dma = Dma.new
-    @gpu = Gpu.new
+    @gpu = Gpu.new(@counters)
+  end
+
+  def ram
+    @ram
   end
 
   def do_dma_linked_list(port)
@@ -158,7 +164,16 @@ class Bus
     case addr_abs
     when BIOS_RANGE then @bios.load32(addr_abs - BIOS_RANGE.begin)
     when RAM_RANGE then @ram.load32(addr_abs - RAM_RANGE.begin)
-    when IRQCONTROL_RANGE then 0x00_u32 # puts "IRQCONTROL read 0x#{offset.to_s(16)}"
+    when IRQCONTROL_RANGE
+      offset = addr_abs - IRQCONTROL_RANGE.begin
+      case offset
+      when 0
+        @irq.status.to_u32
+      when 4
+        @irq.mask.to_u32
+      else
+        raise "Unhandled IRQ load32 at address #{offset.to_s(16)}"
+      end
     when DMA_RANGE then dma_reg(addr_abs - DMA_RANGE.begin)
     when GPU_RANGE
       offset = addr_abs - GPU_RANGE.begin
@@ -169,6 +184,7 @@ class Bus
         0x00_u32
       end
     when TIMERS_RANGE then 0x00_u32
+    when MEMCONTROL_RANGE then 0x00_u32
     when CDROM_RANGE then 0xFFFFFFFF_u32 #puts "Unhandled CDROM read"
     else
       raise "unhandled fetch32 at address #{addr.to_s(16)}"
@@ -180,7 +196,16 @@ class Bus
     case addr_abs
     when SPU_RANGE then 0x00_u16 # puts "Unhandled read from SPU register 0x#{addr_abs.to_s(16)}"
     when RAM_RANGE then @ram.load16(addr_abs - RAM_RANGE.begin)
-    when IRQCONTROL_RANGE then 0x00_u16 # puts "IRQ control read offset"
+    when IRQCONTROL_RANGE
+      offset = addr_abs - IRQCONTROL_RANGE.begin
+      case offset
+      when 0
+        @irq.status
+      when 4
+        @irq.mask
+      else
+        raise "Unhandled IRQ load16 at address #{offset.to_s(16)}"
+      end
     when CDROM_RANGE then 0xFFFF_u16 #puts "Unhandled CDROM read"
     else
       raise "unhandled load16 at address 0x#{addr.to_s(16)}"
@@ -219,7 +244,16 @@ class Bus
     when RAMSIZE_RANGE then puts "RAMSIZE write"
     when RAM_RANGE then @ram.store32(addr_abs - RAM_RANGE.begin, val)
     when CACHECONTROL_RANGE then puts "Unhandled CACHECONTROL write"
-    when IRQCONTROL_RANGE then puts "IRQ control write #{addr_abs}, #{val}"
+    when IRQCONTROL_RANGE
+      offset = addr_abs - IRQCONTROL_RANGE.begin
+      case offset
+      when 0
+        @irq.ack(val.to_u16!)
+      when 4
+        @irq.set_mask(val.to_u16!)
+      else
+        raise "Unhandled IRQ store32 at address #{offset.to_s(16)}"
+      end
     when DMA_RANGE then set_dma_reg(addr_abs - DMA_RANGE.begin, val)
     when GPU_RANGE
       offset = addr_abs - GPU_RANGE.begin
@@ -241,7 +275,16 @@ class Bus
     when SPU_RANGE then #puts "Unhandled write to SPU register 0x#{addr.to_s(16)}"
     when TIMERS_RANGE then puts "Unhandled write to timer register 0x#{addr_abs.to_s(16)}"
     when RAM_RANGE then @ram.store16(addr_abs - RAM_RANGE.begin, val)
-    when IRQCONTROL_RANGE then puts "IRQ control write #{addr_abs - IRQCONTROL_RANGE.begin}, #{val}"
+    when IRQCONTROL_RANGE
+      offset = addr_abs - IRQCONTROL_RANGE.begin
+      case offset
+      when 0
+        @irq.ack(val)
+      when 4
+        @irq.set_mask(val)
+      else
+        raise "Unhandled IRQ store16 at address #{offset.to_s(16)}"
+      end
     when CDROM_RANGE then puts "Unhandled CDROM write"
     else
       raise "unhandled store16 into address 0x#{addr_abs.to_s(16)}"
@@ -251,7 +294,12 @@ class Bus
   def store8(addr : UInt32, val : UInt8)
     addr_abs = mask_region(addr)
     case addr_abs
-    when EXPANSION2_RANGE then puts "Unhandled write to expansion 2 register 0x#{addr_abs.to_s(16)}"
+    when EXPANSION2_RANGE
+      if addr_abs.to_s(16) == "1f802041"
+        puts "Bios status #{val}"
+      else
+        puts "Unhandled write to expansion 2 register 0x#{addr_abs.to_s(16)}"
+      end
     when RAM_RANGE then @ram.store8(addr_abs - RAM_RANGE.begin, val)
     when CDROM_RANGE then puts "Unhandled CDROM write"
     else

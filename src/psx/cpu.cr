@@ -1,22 +1,30 @@
 require "sdl"
+require "./cop0"
 
 class CPU
-  @bus : Bus
   @regs : Array(UInt32)
   @out_regs : Array(UInt32)
   @hi : UInt32
   @lo : UInt32
   @next_pc : UInt32
 
-  SYSCALL = 0x8_u32
-  OVERFLOW = 0xC_u32
-  LOAD_ADDRESS_ERROR = 0x3_u32
-  STORE_ADDRESS_ERROR = 0x5_u32
-  BREAK = 0x9_u32
-  COPROCESSOR_ERROR = 0xB_u32
-  ILLEGAL_INSTRUCTION = 0xA_u32
+  enum Exception : UInt32
+    Interrupt = 0x0
+    LoadAddressError= 0x4
+    StoreAddressError = 0x5
+    SysCall = 0x8
+    Break = 0x9
+    IllegalInstruction = 0xA
+    CoprocessorError = 0xB
+    Overflow= 0xC
+  end
 
-  def initialize(bus)
+  def initialize(bus : Bus, irq : InterruptState, counters : Counters, sideloadfile : String, sideload : Bool)
+    @sideload = sideload
+    @sideloadfile = sideloadfile
+    @counters = counters
+    @irq = irq
+    @cop0 = Cop0.new(irq)
     @pc = 0xBFC00000_u32
     @next_pc = @pc &+ 4
     @bus = bus
@@ -34,27 +42,10 @@ class CPU
     @out_regs = Array.new 32, 0_u32
     @load = {0_u32, 0_u32}
     @next_instruction = 0_u32
-    @sr = 0_u32
     @current_pc = 0_u32
-    @cause = 0_u32
-    @epc = 0_u32
     @branchbool = false
     @delaybool = false
-  end
-
-  def exception(cause)
-    handler = @sr & (1 << 22) != 0 ? 0xBFC00180_u32 : 0x80000080_u32
-    mode = @sr & 0x3F
-    @sr &= 0x3F
-    @sr |= (mode << 2) & 0x3F
-    @cause = cause << 2
-    @epc = @current_pc
-    if @delaybool
-      @epc = @epc &- 4
-      @cause |= 1 << 31
-    end
-    @pc = handler
-    @next_pc = @pc &+ 4
+    @debug = false
   end
 
   def load32(addr : UInt32) : UInt32
@@ -70,7 +61,7 @@ class CPU
   end
 
   def store32(addr : UInt32, val : UInt32)
-    if @sr & 0x10000 != 0
+    if @cop0.cache_isolated
       #puts "ignoring store while cache is isolated"
     else
       @bus.store32(addr, val)
@@ -104,21 +95,39 @@ class CPU
   end
 
   def run_next_instruction
+    if @pc == 0x80030000 && @sideload
+      @bus.ram.sideload(@sideloadfile)
+      @pc = @bus.ram.pc
+      @next_pc = @pc &+ 4
+      @sideload = false
+      @debug = false
+    end
     pc = @pc
     instruction = load32(pc)
+    if @debug
+      puts "instruction 0x#{instruction.to_s(16)}, pc #{pc.to_s(16)}"
+      sleep(0.2)
+    end
     @delaybool = @branchbool
     @branchbool = false
     @current_pc = @pc
     if @current_pc % 4 != 0
-      exception(LOAD_ADDRESS_ERROR)
+      @cop0.exception(Exception::LoadAddressError, @current_pc, @branchbool)
     end
     @pc = @next_pc
     @next_pc = @next_pc &+ 4
     reg, val = @load
     set_reg(reg, val)
     @load = {0_u32, 0_u32}
-    decode_and_execute(instruction)
+    if @cop0.irq_active
+      @counters.cpu_interrupt.increment
+    else
+      decode_and_execute(instruction)
+    end
     @regs = @out_regs.clone
+    if @pc == 0xB0 && @regs[9] == 0x3D
+      print @regs[4].chr
+    end
   end
 
   def read_reg(index : UInt32) : UInt32
@@ -217,11 +226,11 @@ class CPU
 
   def op_illegal(instruction)
     puts "Illegal instruction 0x#{instruction.to_s(16)}"
-    exception(ILLEGAL_INSTRUCTION)
+    @cop0.exception(Exception::IllegalInstruction, @current_pc, @delaybool)
   end
 
   def op_swc3(instruction)
-    exception(COPROCESSOR_ERROR)
+    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_swc2(instruction)
@@ -229,16 +238,16 @@ class CPU
   end
 
   def op_swc1(instruction)
-    exception(COPROCESSOR_ERROR)
+    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_swc0(instruction)
-    exception(COPROCESSOR_ERROR)
+    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
 
   def op_lwc3(instruction)
-    exception(COPROCESSOR_ERROR)
+    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_lwc2(instruction)
@@ -246,11 +255,11 @@ class CPU
   end
 
   def op_lwc1(instruction)
-    exception(COPROCESSOR_ERROR)
+    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_lwc0(instruction)
-    exception(COPROCESSOR_ERROR)
+    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_swr(instruction)
@@ -329,16 +338,46 @@ class CPU
     @load = {t, v}
   end
 
+  def op_mfc2(instruction)
+    cpu_r = @t
+    cop_r = @d
+    #v = gte.data(cop_r)
+    #@load = {cpu_r, v}
+    puts "mfc2"
+  end
+
+  def op_cfc2(instruction)
+    puts "cfc2"
+  end
+
+  def op_mtc2(instruction)
+    puts "mtc2"
+  end
+
+  def op_ctc2(instruction)
+    puts "ctc2"
+  end
+
   def op_cop2(instruction)
-    raise "unhandled GTE instruction 0x#{instruction.to_s(16)}"
+    if @s & 0x10 != 0
+      raise "Unhandled GTE command"
+    else
+      case @s
+      when 0b00000 then op_mfc2(instruction)
+      when 0b00010 then op_cfc2(instruction)
+      when 0b00100 then op_mtc2(instruction)
+      when 0b00110 then op_ctc2(instruction)
+      else raise "unhandled cop2 GTE instruction 0x#{instruction.to_s(16)}"
+      end
+    end
   end
 
   def op_cop3(instruction)
-    exception(COPROCESSOR_ERROR)
+    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_cop1(instruction)
-    exception(COPROCESSOR_ERROR)
+    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_xori(instruction)
@@ -357,7 +396,7 @@ class CPU
     t = read_reg(t).to_u64
     v = s - t
     if ((v ^ s) & (s ^ t)) & 0x80000000 != 0
-      exception(OVERFLOW)
+      @cop0.exception(Exception::Overflow, @current_pc, @delaybool)
     else
       set_reg(d, v.to_u32!)
     end
@@ -374,7 +413,7 @@ class CPU
   end
 
   def op_break(instruction)
-    exception(BREAK)
+    @cop0.exception(Exception::Break, @current_pc, @delaybool)
   end
 
   def op_srlv(instruction)
@@ -445,12 +484,12 @@ class CPU
       v = load16(addr)
       @load = {t, v.to_u32}
     else
-      exception(LOAD_ADDRESS_ERROR)
+      @cop0.exception(Exception::LoadAddressError, @current_pc, @delaybool)
     end
   end
 
   def op_syscall(instruction)
-    exception(SYSCALL)
+    @cop0.exception(Exception::SysCall, @current_pc, @delaybool)
   end
 
   def op_mthi(instruction)
@@ -575,7 +614,6 @@ class CPU
         ra = @next_pc
         set_reg(31, ra)
       end
-      #puts "BRANCHED FROM BXX, #{i}"
       branch(i)
     end
   end
@@ -624,7 +662,7 @@ class CPU
     t = read_reg(t).to_u64
     v = s + t
     if ((v ^ s) & (v ^ t)) & 0x80000000 != 0
-      exception(OVERFLOW)
+      @cop0.exception(Exception::Overflow, @current_pc, @delaybool)
     else
       set_reg(d, v.to_u32!)
     end
@@ -665,7 +703,7 @@ class CPU
   end
 
   def op_sb(instruction)
-    if @sr & 0x10000 != 0
+    if @cop0.cache_isolated
       #puts "Ignoring store while cache is isolated"
     else
       i = imm_se(instruction)
@@ -693,7 +731,7 @@ class CPU
   end
 
   def op_sh(instruction)
-    if @sr & 0x10000 != 0
+    if @cop0.cache_isolated
       #puts "Ignoring store while cache is isolated"
     else
       i = imm_se(instruction)
@@ -704,7 +742,7 @@ class CPU
         v = read_reg(t) & 0xFFFF
         store16(addr, v.to_u16)
       else
-        exception(STORE_ADDRESS_ERROR)
+        @cop0.exception(Exception::StoreAddressError, @current_pc, @delaybool)
       end
     end
   end
@@ -726,7 +764,7 @@ class CPU
   end
 
   def op_lw(instruction)
-    if @sr & 0x10000 != 0
+    if @cop0.cache_isolated
       puts "Ignoring load while cache is isolated"
     else
       i = imm_se(instruction)
@@ -737,7 +775,7 @@ class CPU
         v = load32(addr)
         @load = {t, v}
       else
-        exception(LOAD_ADDRESS_ERROR)
+        @cop0.exception(Exception::LoadAddressError, @current_pc, @delaybool)
       end
     end
   end
@@ -751,7 +789,7 @@ class CPU
     s = read_reg(s).to_u64
     v = s + i
     if ((v ^ s) & (v ^ i)) & 0x80000000 != 0
-      exception(OVERFLOW)
+      @cop0.exception(Exception::Overflow, @current_pc, @delaybool)
     else
       v &= 0xFFFFFFFF
       set_reg(t, v.to_u32)
@@ -772,28 +810,19 @@ class CPU
     case @s
     when 0b00000 then op_mfc0
     when 0b00100 then op_mtc0
-    when 0b10000 then op_rfe(instruction)
+    when 0b10000 then @cop0.return_from_exception
     else
       raise "unhandled cop0 instruction 0x#{instruction.to_s(16)}, #{@s.to_s(2)}"
     end
-  end
-
-  def op_rfe(instruction)
-    if instruction & 0x3F != 0b010000
-      raise "Invalid cop0 instruction #{instruction.to_s(16)}"
-    end
-    mode = @sr & 0x3F
-    @sr &= ~0x3F
-    @sr |= mode >> 2
   end
 
   def op_mfc0
     cpu_r = @t
     cop_r = @d
     case cop_r
-    when 12 then v = @sr
-    when 13 then v = @cause
-    when 14 then v = @epc
+    when 12 then v = @cop0.sr
+    when 13 then v = @cop0.cause
+    when 14 then v = @cop0.epc
     else
       raise "Unhandled read from cop0r #{cop_r}"
     end
@@ -809,7 +838,7 @@ class CPU
       if v != 0
         raise "Unhandled write to cop0r #{cop_r}"
       end
-    when 12 then @sr = v
+    when 12 then @cop0.set_sr(v)
     when 13
       if v != 0
         raise "Unhandled write to CAUSE register"
@@ -866,7 +895,7 @@ class CPU
       v = read_reg(t)
       store32(addr, v)
     else
-      exception(STORE_ADDRESS_ERROR)
+      @cop0.exception(Exception::StoreAddressError, @current_pc, @delaybool)
     end
   end
 

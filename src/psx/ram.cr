@@ -2,6 +2,54 @@ class Ram
   @data : Array(UInt8)
   def initialize
     @data = Array.new 2*1024*1024, 0xCA_u8
+    @pc = 0_u32
+      #basically, step the CPU until it hits an offset, parse the header, copy the exe into RAM, and set PC to its entry point
+      #let me grab that offset
+      #0x80030000
+      #(start of the shell)
+      #I went about it a slightly different way, patching the call site where the shell is decompressed, but the end result is the same
+      #but if you are hooking 80030000, make sure you copy the EXE in after the BIOS bootstrap executes, otherwise the shell decompression will trash your nicely loaded exe
+      #https://github.com/stenzek/duckstation/blob/master/src/core/system.cpp#L662 and https://github.com/stenzek/duckstation/blob/master/src/core/bios.h#L27
+  end
+
+  def sideload(file)
+    puts "Sideloading #{file}"
+    file_content = File.read(file)
+    File.open(file) do |io|
+      magic = io.gets(8)
+      if magic != "PS-X EXE"
+        raise "Invalid PSEXE file"
+      end
+      io.gets(4)
+      io.gets(4)
+      @pc = UInt32.from_io(io, IO::ByteFormat::LittleEndian)
+      io.gets(4)
+      addr = UInt32.from_io(io, IO::ByteFormat::LittleEndian)
+      regionmask = [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x7FFFFFFF, 0x1FFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF]
+      index = addr >> 29
+      addr &= regionmask[index]
+      size = UInt32.from_io(io, IO::ByteFormat::LittleEndian)
+      io.gets(2016)
+      newaddr = addr
+      newsize = size
+      while newsize > 0
+        data = Slice(UInt8).new(newsize)
+        bytes_read = io.read(data)
+        data = data[0, bytes_read].to_a
+        newsize -= data.size
+        @data[newaddr..data.size] = data
+        newaddr = addr + bytes_read
+      end
+      puts "Magic: #{magic}"
+      puts "New PC: 0x#{@pc.to_s(16)}"
+      puts "Ram write address?: 0x#{addr.to_s(16)}"
+      puts "Loaded file size: #{size} bytes"
+      puts "Sideloading #{file} done!"
+    end
+  end
+
+  def pc
+    @pc
   end
 
   def load32(offset : UInt32) : UInt32

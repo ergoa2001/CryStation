@@ -33,6 +33,7 @@ class Renderer
   def initialize
     @nvertices = 0_u32
     @window = SF::RenderWindow.new(SF::VideoMode.new(WIDTH, HEIGHT), "CryStation", settings: SF::ContextSettings.new(depth: 24, antialiasing: 8))
+    @window.vertical_sync_enabled = true
     @positions = Buffer.new(2)
     @colors = Buffer.new(3)
     @vram = Array(Array(UInt16)).new(512) { Array.new(1024, 0_u16) }
@@ -46,6 +47,8 @@ class Renderer
     @page_x = 0_u32
     @page_y = 0_u32
     @texture_depth = 0_u32
+    @framecount = 0
+    @starttime = Time.monotonic
   end
 
   def set_clut(clut)
@@ -79,7 +82,7 @@ class Renderer
     @vram[y][x]
   end
 
-  def draw_texture(positions, texture)
+  def draw_textures(positions)
     xlen = positions[1][0] - positions[0][0]
     ylen = positions[2][1] - positions[0][1]
     (0...ylen).each do |y|
@@ -171,6 +174,8 @@ class Renderer
     end
     @window.draw @sprite
     @window.display
+    @nvertices = 0
+    @framecount += 1
+    #@window.title = "CryStation - FPS: #{(@framecount / (Time.monotonic - @starttime).seconds).to_i}"
   end
-  @nvertices = 0
 end
