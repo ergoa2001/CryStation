@@ -174,7 +174,7 @@ class Renderer
     end
     @window.draw @sprite
     @window.display
-    @nvertices = 0
+    #@nvertices = 0 #temp hack
     @framecount += 1
     #@window.title = "CryStation - FPS: #{(@framecount / (Time.monotonic - @starttime).seconds).to_i}"
   end

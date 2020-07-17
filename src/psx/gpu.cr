@@ -104,7 +104,9 @@ struct Gpu
   end
 
   def read : UInt32
-    0x00_u32
+    temp = @response
+    @response = 0x00_u32
+    temp
   end
 
   @gp0_command_method : Proc(Void)
@@ -155,6 +157,8 @@ struct Gpu
 
     @renderer = Renderer.new
     @load_buffer = ImageBuffer.new
+
+    @response = 0_u32 #TODO: make it a queue
   end
 
   def position_from_gp0(val : UInt32)
@@ -205,16 +209,114 @@ struct Gpu
     r
   end
 
+  def gp0_fill_rectangle
+    color = color_from_gp0(@gp0_command.word(0))
+    position = position_from_gp0(@gp0_command.word(1))
+    size = position_from_gp0(@gp0_command.word(2))
+    puts "fill rectangle #{color}, #{position}, #{size}"
+  end
+
+  def gp0_rect_texture_16_16_semi_raw
+    # Color is ignored for raw texture
+    size = {16, 16}
+    top_left = position_from_gp0(@gp0_command.word(1))
+    positions = [
+      top_left,
+      {top_left[0] + size[0], top_left[1]},
+      {top_left[0], top_left[1] + size[1]},
+      {top_left[0] + size[0], top_left[1] + size[1]}
+    ]
+    @renderer.set_clut(@gp0_command.word(2) >> 16)
+    @renderer.draw_textures(positions)
+  end
+
+  def gp0_dot_opaque
+    color = color_from_gp0(@gp0_command.word(0))
+    positions = [
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(1))
+    ]
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[1][0] + 1, positions[1][1]), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1] + 1), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[3][0] + 1, positions[3][1] + 1), SF.color(color[0], color[1], color[2]))
+    ]
+    @renderer.push_quad(vertices)
+  end
+
+  def gp0_poly_mono_semi
+    color = color_from_gp0(@gp0_command.word(0))
+    positions = [
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(2)),
+      position_from_gp0(@gp0_command.word(3)),
+      position_from_gp0(@gp0_command.word(4))
+    ]
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[1][0], positions[1][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[3][0], positions[3][1]), SF.color(color[0], color[1], color[2], 124))
+    ]
+    @renderer.push_quad(vertices)
+  end
+
+  def gp0_mono_rect_var_semi
+    color = color_from_gp0(@gp0_command.word(0))
+    size = position_from_gp0(@gp0_command.word(2))
+    positions = [
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(1))
+    ]
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[1][0] + size[0], positions[1][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1] + size[1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[3][0] + size[0], positions[3][1] + size[1]), SF.color(color[0], color[1], color[2], 124))
+    ]
+    @renderer.push_quad(vertices)
+  end
+
+  def gp0_mono_rect_var_opaque
+    color = color_from_gp0(@gp0_command.word(0))
+    size = position_from_gp0(@gp0_command.word(2))
+    positions = [
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(1))
+    ]
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[1][0] + size[0], positions[1][1]), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1] + size[1]), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[3][0] + size[0], positions[3][1] + size[1]), SF.color(color[0], color[1], color[2]))
+    ]
+    @renderer.push_quad(vertices)
+  end
+
   def gp0(val : UInt32)
     if @gp0_words_remaining == 0
       opcode = (val >> 24) & 0xFF
       len, method = case opcode
       when 0x00 then {1_u32, ->gp0_nop}
       when 0x01 then {1_u32, ->gp0_clear_cache}
+      when 0x02 then {3_u32, ->gp0_fill_rectangle}
+      when (0x04..0x1E) then {1_u32, ->gp0_nop}
       when 0x28 then {5_u32, ->gp0_quad_mono_opaque}
+      when 0x2A then {5_u32, ->gp0_poly_mono_semi}
       when 0x2C then {9_u32, ->gp0_quad_texture_blend_opaque}
       when 0x30 then {6_u32, ->gp0_triangle_shaded_opaque}
       when 0x38 then {8_u32, ->gp0_quad_shaded_opaque}
+      when 0x60 then {3_u32, ->gp0_mono_rect_var_opaque}
+      when 0x62 then {3_u32, ->gp0_mono_rect_var_semi}
+      when 0x68 then {2_u32, ->gp0_dot_opaque}
+      when 0x7F then {3_u32, ->gp0_rect_texture_16_16_semi_raw} #broken
       when 0xA0 then {3_u32, ->gp0_image_load}
       when 0xC0 then {3_u32, ->gp0_image_store}
       when 0xE1 then {1_u32, ->gp0_draw_mode}
@@ -258,8 +360,18 @@ struct Gpu
     when 0x06 then gp1_display_horizontal_range(val)
     when 0x07 then gp1_display_vertical_range(val)
     when 0x08 then gp1_display_mode(val)
+    when 0x09 then gp1_new_texture_disable
+    when 0x10 then gp1_get_gpu_info
     else raise "Unhandled GP1 command 0x#{val.to_s(16)}"
     end
+  end
+
+  def gp1_new_texture_disable
+
+  end
+
+  def gp1_get_gpu_info
+    @response = 0x01_u32
   end
 
   def gp1_reset_command_buffer
@@ -310,6 +422,7 @@ struct Gpu
     res = @gp0_command.word(2)
     width = res & 0xFFFF
     height = res >> 16
+    @response = @renderer.vram_read(width, height).to_u32
     puts "Unhandled image store #{width}, #{height}"
   end
 

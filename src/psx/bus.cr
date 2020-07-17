@@ -6,19 +6,20 @@ require "./gpu"
 class Bus
   REGION_MASK = [0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x7FFFFFFF, 0x1FFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF]
 
-  RAM_RANGE =           (0x00000000...0x00200000)
-  EXPANSION1_RANGE =    (0x1F000000...0x1F080000)
-  MEMCONTROL_RANGE =    (0x1F801000...0x1F801024)
-  RAMSIZE_RANGE =       (0x1F801060...0x1F801064)
-  IRQCONTROL_RANGE =    (0x1F801070...0x1F801078)
-  DMA_RANGE =           (0x1F801080...0x1F801100)
-  TIMERS_RANGE =        (0x1F801100...0x1F801130)
-  CDROM_RANGE =         (0x1F801800...0x1F801804)
-  GPU_RANGE =           (0x1F801810...0x1F801818)
-  SPU_RANGE =           (0x1F801C00...0x1F801E80)
-  EXPANSION2_RANGE =    (0x1F802000...0x1F802042)
-  BIOS_RANGE =          (0x1FC00000...0x1FC80000)
-  CACHECONTROL_RANGE =  (0xFFFE0130...0xFFFE0134)
+  RAM_RANGE =           (0x00000000..0x00800000)
+  EXPANSION1_RANGE =    (0x1F000000..0x1F080000)
+  SCRATCHPAD_RANGE =    (0x1F800000..0x1F800400)
+  MEMCONTROL_RANGE =    (0x1F801000..0x1F801024)
+  RAMSIZE_RANGE =       (0x1F801060..0x1F801064)
+  IRQCONTROL_RANGE =    (0x1F801070..0x1F801078)
+  DMA_RANGE =           (0x1F801080..0x1F801100)
+  TIMERS_RANGE =        (0x1F801100..0x1F801130)
+  CDROM_RANGE =         (0x1F801800..0x1F801804)
+  GPU_RANGE =           (0x1F801810..0x1F801818)
+  SPU_RANGE =           (0x1F801C00..0x1F801E80)
+  EXPANSION2_RANGE =    (0x1F802000..0x1F802042)
+  BIOS_RANGE =          (0x1FC00000..0x1FC80000)
+  CACHECONTROL_RANGE =  (0xFFFE0130..0xFFFE0134)
 
   def initialize(irq : InterruptState, counters : Counters,)
     @counters = counters
@@ -157,10 +158,6 @@ class Bus
 
   def load32(addr : UInt32) : UInt32
     addr_abs = mask_region(addr)
-    if addr % 4 != 0
-      raise "Unaligned load32 address: #{addr.to_s(16)}"
-    end
-
     case addr_abs
     when BIOS_RANGE then @bios.load32(addr_abs - BIOS_RANGE.begin)
     when RAM_RANGE then @ram.load32(addr_abs - RAM_RANGE.begin)
@@ -186,6 +183,7 @@ class Bus
     when TIMERS_RANGE then 0x00_u32
     when MEMCONTROL_RANGE then 0x00_u32
     when CDROM_RANGE then 0xFFFFFFFF_u32 #puts "Unhandled CDROM read"
+    when SCRATCHPAD_RANGE then 0x00_u32
     else
       raise "unhandled fetch32 at address #{addr.to_s(16)}"
     end
@@ -207,6 +205,7 @@ class Bus
         raise "Unhandled IRQ load16 at address #{offset.to_s(16)}"
       end
     when CDROM_RANGE then 0xFFFF_u16 #puts "Unhandled CDROM read"
+    when SCRATCHPAD_RANGE then 0x00_u16
     else
       raise "unhandled load16 at address 0x#{addr.to_s(16)}"
     end
@@ -219,6 +218,7 @@ class Bus
     when EXPANSION1_RANGE then 0xFF_u8
     when RAM_RANGE then @ram.load8(addr_abs - RAM_RANGE.begin)
     when CDROM_RANGE then 0xFF_u8 #puts "Unhandled CDROM read"
+    when SCRATCHPAD_RANGE then 0x00_u8
     else
       raise "unhandled load8 at address 0x#{addr_abs.to_s(16)}"
     end
@@ -264,6 +264,7 @@ class Bus
       end
     when TIMERS_RANGE then puts "unhandled write to timer register 0x#{addr_abs.to_s(16)}, 0x#{val.to_s(16)}"
     when CDROM_RANGE then puts "Unhandled CDROM write"
+    when SCRATCHPAD_RANGE then puts "Unhandled scratchpad store"
     else
       raise "unhandled store32 into address #{addr_abs.to_s(16)}"
     end
@@ -286,6 +287,7 @@ class Bus
         raise "Unhandled IRQ store16 at address #{offset.to_s(16)}"
       end
     when CDROM_RANGE then puts "Unhandled CDROM write"
+    when SCRATCHPAD_RANGE then puts "Unhandled scratchpad store"
     else
       raise "unhandled store16 into address 0x#{addr_abs.to_s(16)}"
     end
@@ -302,6 +304,7 @@ class Bus
       end
     when RAM_RANGE then @ram.store8(addr_abs - RAM_RANGE.begin, val)
     when CDROM_RANGE then puts "Unhandled CDROM write"
+    when SCRATCHPAD_RANGE then puts "Unhandled scratchpad store"
     else
       raise "unhandled store8 into address 0x#{addr.to_s(16)}"
     end

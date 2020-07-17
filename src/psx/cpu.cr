@@ -19,6 +19,8 @@ class CPU
     Overflow= 0xC
   end
 
+  PROCESSOR_ID = 0x00000002_u32
+
   def initialize(bus : Bus, irq : InterruptState, counters : Counters, sideloadfile : String, sideload : Bool)
     @sideload = sideload
     @sideloadfile = sideloadfile
@@ -392,13 +394,13 @@ class CPU
     s = @s
     t = @t
     d = @d
-    s = read_reg(s).to_u64
-    t = read_reg(t).to_u64
-    v = s - t
+    s = read_reg(s)
+    t = read_reg(t)
+    v = s &- t
     if ((v ^ s) & (s ^ t)) & 0x80000000 != 0
       @cop0.exception(Exception::Overflow, @current_pc, @delaybool)
     else
-      set_reg(d, v.to_u32!)
+      set_reg(d, v)
     end
   end
 
@@ -429,7 +431,7 @@ class CPU
     s = @s
     t = @t
     v = read_reg(t).to_i32! >> (read_reg(s) & 0x1F)
-    set_reg(d, v.to_u32)
+    set_reg(d, v.to_u32!)
   end
 
   def op_multu(instruction)
@@ -658,9 +660,9 @@ class CPU
     s = @s
     t = @t
     d = @d
-    s = read_reg(s).to_u64
-    t = read_reg(t).to_u64
-    v = s + t
+    s = read_reg(s)
+    t = read_reg(t)
+    v = s &+ t
     if ((v ^ s) & (v ^ t)) & 0x80000000 != 0
       @cop0.exception(Exception::Overflow, @current_pc, @delaybool)
     else
@@ -823,6 +825,7 @@ class CPU
     when 12 then v = @cop0.sr
     when 13 then v = @cop0.cause
     when 14 then v = @cop0.epc
+    when 15 then v = PROCESSOR_ID
     else
       raise "Unhandled read from cop0r #{cop_r}"
     end
@@ -839,10 +842,7 @@ class CPU
         raise "Unhandled write to cop0r #{cop_r}"
       end
     when 12 then @cop0.set_sr(v)
-    when 13
-      if v != 0
-        raise "Unhandled write to CAUSE register"
-      end
+    when 13 then @cop0.set_cause(v)
     else
       raise "Unhandled cop0 register #{cop_r}"
     end
