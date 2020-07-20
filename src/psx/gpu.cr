@@ -1,6 +1,6 @@
 require "./renderer"
 
-struct CommandBuffer
+class CommandBuffer
   @buffer : Array(UInt32)
   def initialize
     @buffer = Array.new(12, 0_u32)
@@ -21,7 +21,7 @@ struct CommandBuffer
   end
 end
 
-struct ImageBuffer
+class ImageBuffer
   @buffer : Array(UInt16)
   VRAM_SIZE_PIXELS = 1024 * 512
   def initialize
@@ -47,8 +47,8 @@ struct ImageBuffer
   end
 
   def getbuffer
-    len = @resolution[0] * @resolution[1]
-    @buffer[0, len]
+    len = @resolution[0].to_u32 * @resolution[1].to_u32
+    @buffer[0..len]
   end
 
   def reset(x : UInt16, y : UInt16, width : UInt16, height : UInt16)
@@ -65,11 +65,12 @@ struct ImageBuffer
   end
 end
 
-struct Gpu
+class Gpu
   enum TextureDepth : UInt32
     T4Bit
     T8Bit
     T16Bit
+    Reserved
   end
   enum Field : UInt32
     Bottom
@@ -161,17 +162,109 @@ struct Gpu
     @response = 0_u32 #TODO: make it a queue
   end
 
+  def drawframe
+    @renderer.draw
+  end
+
+  def gp0(val : UInt32)
+    if @gp0_words_remaining == 0
+      opcode = (val >> 24) & 0xFF
+      len, method = case opcode
+      when 0x00 then {1_u32, ->gp0_nop}
+      when 0x01 then {1_u32, ->gp0_clear_cache}
+      when 0x02 then {3_u32, ->gp0_fill_rectangle}
+      when (0x04..0x1E) then {1_u32, ->gp0_nop}
+      when 0x20 then {4_u32, ->gp0_mono_three_poly_opaque}
+      when 0x22 then {4_u32, ->gp0_mono_three_poly_semi}
+      when 0x28 then {5_u32, ->gp0_quad_mono_opaque}
+      when 0x2A then {5_u32, ->gp0_poly_mono_semi}
+      when 0x2C then {9_u32, ->gp0_quad_texture_blend_opaque}
+      when 0x30 then {6_u32, ->gp0_triangle_shaded_opaque}
+      when 0x32 then {6_u32, ->gp0_triangle_shaded_semi}
+      when 0x38 then {8_u32, ->gp0_quad_shaded_opaque}
+      when 0x3A then {8_u32, ->gp0_quad_shaded_semi}
+      when 0x40 then {3_u32, ->gp0_mono_line_opaque}
+      when 0x42 then {3_u32, ->gp0_mono_line_semi}
+      when 0x48 then {4_u32, ->gp0_nop} #mono Polyline opaque
+      when 0x4A then {4_u32, ->gp0_nop} #mono Polyline semi
+      when 0x50 then {4_u32, ->gp0_shaded_line_opaque}
+      when 0x52 then {4_u32, ->gp0_shaded_line_semi}
+      when 0x55 then {1_u32, ->gp0_nop} #termination code
+      when 0x58 then {4_u32, ->gp0_nop} #shaded Polyline semi
+      when 0x5A then {4_u32, ->gp0_nop} #shaded Polyline semi
+      when 0x60 then {3_u32, ->gp0_mono_rect_var_opaque}
+      when 0x62 then {3_u32, ->gp0_mono_rect_var_semi}
+      when 0x64 then {4_u32, ->gp0_rect_texture_blend_var_opaque}
+      when 0x66 then {4_u32, ->gp0_rect_texture_blend_var_semi}
+      when 0x68 then {2_u32, ->gp0_dot_opaque}
+      when 0x6A then {2_u32, ->gp0_dot_semi}
+      when 0x70 then {2_u32, ->gp0_mono_rect_8_8_opaque}
+      when 0x72 then {2_u32, ->gp0_mono_rect_8_8_semi}
+      when 0x74 then {3_u32, ->gp0_rect_texture_8_8_blend_opaque}
+      when 0x78 then {2_u32, ->gp0_mono_rect_16_16_opaque}
+      when 0x7A then {2_u32, ->gp0_mono_rect_16_16_semi}
+      when 0x7F then {3_u32, ->gp0_rect_texture_16_16_semi_raw} #broken
+      when 0x80 then {4_u32, ->gp0_copy_rect}
+      when 0xA0 then {3_u32, ->gp0_image_load}
+      when 0xC0 then {3_u32, ->gp0_image_store}
+      when 0xE1 then {1_u32, ->gp0_draw_mode}
+      when 0xE2 then {1_u32, ->gp0_texture_window}
+      when 0xE3 then {1_u32, ->gp0_drawing_area_top_left}
+      when 0xE4 then {1_u32, ->gp0_drawing_area_bottom_right}
+      when 0xE5 then {1_u32, ->gp0_drawing_offset}
+      when 0xE6 then {1_u32, ->gp0_mask_bit_setting}
+      else raise "Unhandled GP0 command 0x#{val.to_s(16)}"
+      end
+      @gp0_words_remaining = len
+      @gp0_command_method = method
+      @gp0_command.clear
+    end
+    @gp0_words_remaining -= 1
+    case @gp0_mode
+    when Gp0Mode::Command
+      @gp0_command.push_word(val)
+      if @gp0_words_remaining == 0
+        @gp0_command_method.call
+      end
+    when Gp0Mode::ImageLoad
+      @load_buffer.push_gp0_word(val)
+      if @gp0_words_remaining == 0
+        @renderer.load_image(@load_buffer.top_left, @load_buffer.resolution, @load_buffer.getbuffer)
+        @load_buffer.clear
+        @gp0_mode = Gp0Mode::Command
+      end
+    end
+  end
+
+  def gp1(val : UInt32)
+    opcode = (val >> 24) & 0xFF
+    case opcode
+    when 0x00 then gp1_reset(val)
+    when 0x01 then gp1_reset_command_buffer
+    when 0x02 then gp1_acknowledge_irq
+    when 0x03 then gp1_display_enable(val)
+    when 0x04 then gp1_dma_direction(val)
+    when 0x05 then gp1_display_vram_start(val)
+    when 0x06 then gp1_display_horizontal_range(val)
+    when 0x07 then gp1_display_vertical_range(val)
+    when 0x08 then gp1_display_mode(val)
+    when 0x09 then gp1_new_texture_disable
+    when 0x10 then gp1_get_gpu_info
+    else raise "Unhandled GP1 command 0x#{val.to_s(16)}"
+    end
+  end
+
   def position_from_gp0(val : UInt32)
     x = val.to_u16!
     y = (val >> 16).to_u16!
-    {x, y}
+    [x, y]
   end
 
   def color_from_gp0(val : UInt32)
     r = val.to_u8!
     g = (val >> 8) .to_u8!
     b = (val >> 16).to_u8!
-    {r, g, b}
+    [r, g, b, 255]
   end
 
   def status : UInt32
@@ -209,11 +302,222 @@ struct Gpu
     r
   end
 
+  def gp0_mono_rect_8_8_semi
+    size = {8, 8}
+    color = color_from_gp0(@gp0_command.word(0))
+    top_left = position_from_gp0(@gp0_command.word(1))
+    positions = [
+      top_left,
+      {top_left[0] + size[0], top_left[1]},
+      {top_left[0], top_left[1] + size[1]},
+      {top_left[0] + size[0], top_left[1] + size[1]}
+    ]
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[1][0], positions[1][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[3][0], positions[3][1]), SF.color(color[0], color[1], color[2], 124))
+    ]
+    @renderer.push_quad(vertices)
+  end
+
+  def gp0_mono_rect_16_16_semi
+    size = {16, 16}
+    color = color_from_gp0(@gp0_command.word(0))
+    top_left = position_from_gp0(@gp0_command.word(1))
+    positions = [
+      top_left,
+      {top_left[0] + size[0], top_left[1]},
+      {top_left[0], top_left[1] + size[1]},
+      {top_left[0] + size[0], top_left[1] + size[1]}
+    ]
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[1][0], positions[1][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[3][0], positions[3][1]), SF.color(color[0], color[1], color[2], 124))
+    ]
+    @renderer.push_quad(vertices)
+  end
+
+  def gp0_mono_rect_16_16_opaque
+    size = {16, 16}
+    color = color_from_gp0(@gp0_command.word(0))
+    top_left = position_from_gp0(@gp0_command.word(1))
+    positions = [
+      top_left,
+      {top_left[0] + size[0], top_left[1]},
+      {top_left[0], top_left[1] + size[1]},
+      {top_left[0] + size[0], top_left[1] + size[1]}
+    ]
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[1][0], positions[1][1]), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1]), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[3][0], positions[3][1]), SF.color(color[0], color[1], color[2]))
+    ]
+    @renderer.push_quad(vertices)
+  end
+
+  def gp0_mono_rect_8_8_opaque
+    size = {8, 8}
+    color = color_from_gp0(@gp0_command.word(0))
+    top_left = position_from_gp0(@gp0_command.word(1))
+    positions = [
+      top_left,
+      {top_left[0] + size[0], top_left[1]},
+      {top_left[0], top_left[1] + size[1]},
+      {top_left[0] + size[0], top_left[1] + size[1]}
+    ]
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[1][0], positions[1][1]), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1]), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[3][0], positions[3][1]), SF.color(color[0], color[1], color[2]))
+    ]
+    @renderer.push_quad(vertices)
+  end
+
+  def gp0_mono_three_poly_semi
+    color = color_from_gp0(@gp0_command.word(0))
+    positions = [
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(2)),
+      position_from_gp0(@gp0_command.word(3))
+    ]
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[1][0], positions[1][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1]), SF.color(color[0], color[1], color[2], 124))
+    ]
+    @renderer.push_triangle(vertices)
+  end
+
+  def gp0_mono_three_poly_opaque
+    color = color_from_gp0(@gp0_command.word(0))
+    positions = [
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(2)),
+      position_from_gp0(@gp0_command.word(3))
+    ]
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[1][0], positions[1][1]), SF.color(color[0], color[1], color[2])),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1]), SF.color(color[0], color[1], color[2])),
+    ]
+    @renderer.push_triangle(vertices)
+  end
+
+  def gp0_copy_rect
+    source = position_from_gp0(@gp0_command.word(1))
+    dest = position_from_gp0(@gp0_command.word(2))
+    size = position_from_gp0(@gp0_command.word(3))
+    @renderer.copy_rect(source, dest, size)
+  end
+
+  def gp0_rect_texture_8_8_blend_opaque
+    color = color_from_gp0(@gp0_command.word(0))
+    size = {8, 8}
+    top_left = position_from_gp0(@gp0_command.word(1))
+    positions = [
+      top_left,
+      {top_left[0] + size[0], top_left[1]},
+      {top_left[0], top_left[1] + size[1]},
+      {top_left[0] + size[0], top_left[1] + size[1]}
+    ]
+    @renderer.set_clut(@gp0_command.word(2) >> 16)
+    @renderer.draw_textures(positions, 255)
+  end
+
+  def gp0_shaded_line_semi
+    colors = [
+      color_from_gp0(@gp0_command.word(0)),
+      color_from_gp0(@gp0_command.word(2))
+    ]
+    colors[0] << 124
+    colors[1] << 124
+    positions = [
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(3))
+    ]
+    @renderer.draw_line(positions, colors)
+  end
+
+  def gp0_shaded_line_opaque
+    colors = [
+      color_from_gp0(@gp0_command.word(0)),
+      color_from_gp0(@gp0_command.word(2))
+    ]
+    positions = [
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(3))
+    ]
+    @renderer.draw_line(positions, colors)
+  end
+
+  def gp0_mono_line_semi
+    color = [
+      color_from_gp0(@gp0_command.word(0)),
+      color_from_gp0(@gp0_command.word(0))
+      ]
+      color[0] << 124
+      color[1] << 124
+    positions = [
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(2))
+    ]
+    @renderer.draw_line(positions, color)
+  end
+
+  def gp0_mono_line_opaque
+    color = [
+      color_from_gp0(@gp0_command.word(0)),
+      color_from_gp0(@gp0_command.word(0))
+      ]
+    positions = [
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(2))
+    ]
+    @renderer.draw_line(positions, color)
+  end
+
+  def gp0_rect_texture_blend_var_semi
+    size = position_from_gp0(@gp0_command.word(3))
+    pos = position_from_gp0(@gp0_command.word(1))
+    positions = [
+      {pos[0], pos[1]},
+      {pos[0] + size[0], pos[1]},
+      {pos[0], pos[1] + size[1]},
+      {pos[0] + size[0], pos[1] + size[1]}
+      ]
+    color = color_from_gp0(@gp0_command.word(0))
+
+    @renderer.set_clut(@gp0_command.word(2) >> 16)
+
+    @renderer.draw_textures(positions, 124)
+  end
+
+  def gp0_rect_texture_blend_var_opaque
+    size = position_from_gp0(@gp0_command.word(3))
+    pos = position_from_gp0(@gp0_command.word(1))
+    positions = [
+      {pos[0], pos[1]},
+      {pos[0] + size[0], pos[1]},
+      {pos[0], pos[1] + size[1]},
+      {pos[0] + size[0], pos[1] + size[1]}
+      ]
+    color = color_from_gp0(@gp0_command.word(0))
+
+    @renderer.set_clut(@gp0_command.word(2) >> 16)
+
+    @renderer.draw_textures(positions, 255)
+  end
+
   def gp0_fill_rectangle
     color = color_from_gp0(@gp0_command.word(0))
     position = position_from_gp0(@gp0_command.word(1))
     size = position_from_gp0(@gp0_command.word(2))
-    puts "fill rectangle #{color}, #{position}, #{size}"
+    @renderer.fill_rectangle(position, size, color)
   end
 
   def gp0_rect_texture_16_16_semi_raw
@@ -227,7 +531,24 @@ struct Gpu
       {top_left[0] + size[0], top_left[1] + size[1]}
     ]
     @renderer.set_clut(@gp0_command.word(2) >> 16)
-    @renderer.draw_textures(positions)
+    @renderer.draw_textures(positions, 124)
+  end
+
+  def gp0_dot_semi
+    color = color_from_gp0(@gp0_command.word(0))
+    positions = [
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(1))
+    ]
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[1][0] + 1, positions[1][1]), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1] + 1), SF.color(color[0], color[1], color[2], 124)),
+      SF::Vertex.new(SF.vector2(positions[3][0] + 1, positions[3][1] + 1), SF.color(color[0], color[1], color[2], 124))
+    ]
+    @renderer.push_quad(vertices)
   end
 
   def gp0_dot_opaque
@@ -300,72 +621,6 @@ struct Gpu
     @renderer.push_quad(vertices)
   end
 
-  def gp0(val : UInt32)
-    if @gp0_words_remaining == 0
-      opcode = (val >> 24) & 0xFF
-      len, method = case opcode
-      when 0x00 then {1_u32, ->gp0_nop}
-      when 0x01 then {1_u32, ->gp0_clear_cache}
-      when 0x02 then {3_u32, ->gp0_fill_rectangle}
-      when (0x04..0x1E) then {1_u32, ->gp0_nop}
-      when 0x28 then {5_u32, ->gp0_quad_mono_opaque}
-      when 0x2A then {5_u32, ->gp0_poly_mono_semi}
-      when 0x2C then {9_u32, ->gp0_quad_texture_blend_opaque}
-      when 0x30 then {6_u32, ->gp0_triangle_shaded_opaque}
-      when 0x38 then {8_u32, ->gp0_quad_shaded_opaque}
-      when 0x60 then {3_u32, ->gp0_mono_rect_var_opaque}
-      when 0x62 then {3_u32, ->gp0_mono_rect_var_semi}
-      when 0x68 then {2_u32, ->gp0_dot_opaque}
-      when 0x7F then {3_u32, ->gp0_rect_texture_16_16_semi_raw} #broken
-      when 0xA0 then {3_u32, ->gp0_image_load}
-      when 0xC0 then {3_u32, ->gp0_image_store}
-      when 0xE1 then {1_u32, ->gp0_draw_mode}
-      when 0xE2 then {1_u32, ->gp0_texture_window}
-      when 0xE3 then {1_u32, ->gp0_drawing_area_top_left}
-      when 0xE4 then {1_u32, ->gp0_drawing_area_bottom_right}
-      when 0xE5 then {1_u32, ->gp0_drawing_offset}
-      when 0xE6 then {1_u32, ->gp0_mask_bit_setting}
-      else raise "Unhandled GP0 command 0x#{val.to_s(16)}"
-      end
-      @gp0_words_remaining = len
-      @gp0_command_method = method
-      @gp0_command.clear
-    end
-    @gp0_words_remaining -= 1
-    case @gp0_mode
-    when Gp0Mode::Command
-      @gp0_command.push_word(val)
-      if @gp0_words_remaining == 0
-        @gp0_command_method.call
-      end
-    when Gp0Mode::ImageLoad
-      @load_buffer.push_gp0_word(val)
-      if @gp0_words_remaining == 0
-        @renderer.load_image(@load_buffer.top_left, @load_buffer.resolution, @load_buffer.getbuffer)
-        @load_buffer.clear
-        @gp0_mode = Gp0Mode::Command
-      end
-    end
-  end
-
-  def gp1(val : UInt32)
-    opcode = (val >> 24) & 0xFF
-    case opcode
-    when 0x00 then gp1_reset(val)
-    when 0x01 then gp1_reset_command_buffer
-    when 0x02 then gp1_acknowledge_irq
-    when 0x03 then gp1_display_enable(val)
-    when 0x04 then gp1_dma_direction(val)
-    when 0x05 then gp1_display_vram_start(val)
-    when 0x06 then gp1_display_horizontal_range(val)
-    when 0x07 then gp1_display_vertical_range(val)
-    when 0x08 then gp1_display_mode(val)
-    when 0x09 then gp1_new_texture_disable
-    when 0x10 then gp1_get_gpu_info
-    else raise "Unhandled GP1 command 0x#{val.to_s(16)}"
-    end
-  end
-
   def gp1_new_texture_disable
 
   end
@@ -395,7 +650,27 @@ struct Gpu
     @renderer.set_clut(@gp0_command.word(2) >> 16)
     @renderer.set_draw_params(@gp0_command.word(4) >> 16)
 
-    @renderer.draw_textures(positions)
+    @renderer.draw_textures(positions, 255)
+  end
+
+  def gp0_triangle_shaded_semi
+    positions = [
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(3)),
+      position_from_gp0(@gp0_command.word(5))
+    ]
+
+    colors = [
+      color_from_gp0(@gp0_command.word(0)),
+      color_from_gp0(@gp0_command.word(2)),
+      color_from_gp0(@gp0_command.word(4))
+    ]
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(colors[0][0], colors[0][1], colors[0][2], 124)),
+      SF::Vertex.new(SF.vector2(positions[1][0], positions[1][1]), SF.color(colors[1][0], colors[1][1], colors[1][2], 124)),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1]), SF.color(colors[2][0], colors[2][1], colors[2][2], 124))
+    ]
+    @renderer.push_triangle(vertices)
   end
 
   def gp0_triangle_shaded_opaque
@@ -424,6 +699,28 @@ struct Gpu
     height = res >> 16
     @response = @renderer.vram_read(width, height).to_u32
     puts "Unhandled image store #{width}, #{height}"
+  end
+
+  def gp0_quad_shaded_semi
+    positions = [
+      position_from_gp0(@gp0_command.word(1)),
+      position_from_gp0(@gp0_command.word(3)),
+      position_from_gp0(@gp0_command.word(5)),
+      position_from_gp0(@gp0_command.word(7))
+    ]
+    colors = [
+      color_from_gp0(@gp0_command.word(0)),
+      color_from_gp0(@gp0_command.word(2)),
+      color_from_gp0(@gp0_command.word(4)),
+      color_from_gp0(@gp0_command.word(6))
+    ]
+    vertices = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF.color(colors[0][0], colors[0][1], colors[0][2], 124)),
+      SF::Vertex.new(SF.vector2(positions[1][0], positions[1][1]), SF.color(colors[1][0], colors[1][1], colors[1][2], 124)),
+      SF::Vertex.new(SF.vector2(positions[2][0], positions[2][1]), SF.color(colors[2][0], colors[2][1], colors[2][2], 124)),
+      SF::Vertex.new(SF.vector2(positions[3][0], positions[3][1]), SF.color(colors[3][0], colors[3][1], colors[3][2], 124))
+    ]
+    @renderer.push_quad(vertices)
   end
 
   def gp0_quad_shaded_opaque
@@ -526,7 +823,6 @@ struct Gpu
     @drawing_x_offset = (x << 5).to_i16! >> 5
     @drawing_y_offset = (y << 5).to_i16! >> 5
 
-    @renderer.draw
     @counters.frame.increment
   end
 
@@ -562,7 +858,7 @@ struct Gpu
     @display_depth = val & 0x10 != 0 ? DisplayDepth::D15Bits : DisplayDepth::D24Bits
     @interlaced = val & 0x20 != 0
     if val & 0x80 != 0
-      raise "Unsupported display mode 0x#{val.to_s(16)}"
+      puts "Unsupported display mode 0x#{val.to_s(16)}"
     end
   end
 
@@ -619,6 +915,7 @@ struct Gpu
     when 0 then TextureDepth::T4Bit
     when 1 then TextureDepth::T8Bit
     when 2 then TextureDepth::T16Bit
+    when 3 then TextureDepth::Reserved
     else raise "Unhandled texture depth #{(val >> 7) & 3}"
     end
     @dithering = ((val >> 9) & 1) != 0

@@ -16,15 +16,17 @@ class CPU
     Break = 0x9
     IllegalInstruction = 0xA
     CoprocessorError = 0xB
-    Overflow= 0xC
+    Overflow = 0xC
   end
 
   PROCESSOR_ID = 0x00000002_u32
 
-  def initialize(bus : Bus, irq : InterruptState, counters : Counters, sideloadfile : String, sideload : Bool)
+  def initialize(bus : Bus, irq : InterruptState, counters : Counters, timers : Timers, sideloadfile : String, sideload : Bool, fastboot : Bool)
     @sideload = sideload
     @sideloadfile = sideloadfile
+    @fastboot = fastboot
     @counters = counters
+    @timers = timers
     @irq = irq
     @cop0 = Cop0.new(irq)
     @pc = 0xBFC00000_u32
@@ -48,9 +50,18 @@ class CPU
     @branchbool = false
     @delaybool = false
     @debug = false
+    @logfile = File.open("./logfile.txt", "w")
+    @cycle_count = 0
+  end
+
+  def drawframe
+    @bus.drawframe
   end
 
   def load32(addr : UInt32) : UInt32
+    if addr == 528488449
+      @logfile.close
+    end
     @bus.load32(addr)
   end
 
@@ -103,29 +114,50 @@ class CPU
       @next_pc = @pc &+ 4
       @sideload = false
       @debug = false
+    elsif @pc == 0x80030000 && @fastboot && @branchbool == false
+      puts "Fastbooting!"
+      @pc = read_reg(31)
+      puts "New PC: 0x#{@pc.to_s(16)}"
+      @next_pc = @pc &+ 4
+      @fastboot = false
     end
-    pc = @pc
-    instruction = load32(pc)
-    if @debug
-      puts "instruction 0x#{instruction.to_s(16)}, pc #{pc.to_s(16)}"
-      sleep(0.2)
-    end
-    @delaybool = @branchbool
-    @branchbool = false
+
+
     @current_pc = @pc
     if @current_pc % 4 != 0
-      @cop0.exception(Exception::LoadAddressError, @current_pc, @branchbool)
+      exception(Exception::LoadAddressError, @current_pc, @branchbool)
     end
+
+    pc = @pc
+    instruction = load32(pc)
+
+    if @debug
+      @logfile.write("#{pc.to_s(16)} #{instruction.to_s(16)} \n".to_slice)
+    end
+
     @pc = @next_pc
-    @next_pc = @next_pc &+ 4
+    @next_pc = @pc &+ 4
+    @delaybool = @branchbool
+    @branchbool = false
+
+    @cycle_count += 1
+    if @cycle_count.remainder(8) == 0
+      @timers.tick
+    end
+
+    if @cop0.irq_active
+      @counters.cpu_interrupt.increment
+      exception(Exception::Interrupt, @current_pc, @branchbool)
+    else
+      @irq.tick
+      decode_and_execute(instruction)
+    end
+
+
     reg, val = @load
     set_reg(reg, val)
     @load = {0_u32, 0_u32}
-    if @cop0.irq_active
-      @counters.cpu_interrupt.increment
-    else
-      decode_and_execute(instruction)
-    end
+
     @regs = @out_regs.clone
     if @pc == 0xB0 && @regs[9] == 0x3D
       print @regs[4].chr
@@ -226,13 +258,19 @@ class CPU
     end
   end
 
+  def exception(cause : Exception, pc : UInt32, delaybool : Bool)
+    handler_addr = @cop0.exception(cause, pc, delaybool)
+    @pc = handler_addr
+    @next_pc = @pc &+ 4
+  end
+
   def op_illegal(instruction)
     puts "Illegal instruction 0x#{instruction.to_s(16)}"
-    @cop0.exception(Exception::IllegalInstruction, @current_pc, @delaybool)
+    exception(Exception::IllegalInstruction, @current_pc, @delaybool)
   end
 
   def op_swc3(instruction)
-    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
+    exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_swc2(instruction)
@@ -240,16 +278,16 @@ class CPU
   end
 
   def op_swc1(instruction)
-    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
+    exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_swc0(instruction)
-    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
+    exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
 
   def op_lwc3(instruction)
-    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
+    exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_lwc2(instruction)
@@ -257,11 +295,11 @@ class CPU
   end
 
   def op_lwc1(instruction)
-    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
+    exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_lwc0(instruction)
-    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
+    exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_swr(instruction)
@@ -280,7 +318,7 @@ class CPU
     else
       raise "SWR unreachable!"
     end
-    store32(addr, mem)
+    store32(aligned_addr, mem)
   end
 
   def op_swl(instruction)
@@ -299,7 +337,7 @@ class CPU
     else
       raise "SWL unreachable!"
     end
-    store32(addr, mem)
+    store32(aligned_addr, mem)
   end
 
   def op_lwr(instruction)
@@ -326,16 +364,23 @@ class CPU
     t = @t
     s = @s
     addr = read_reg(s) &+ i
-    cur_v = @out_regs[t]
+    pending_reg = @load[0]
+    pending_value = @load[1]
+    if pending_value == t
+      cur_v = pending_value
+    else
+      cur_v = read_reg(t)
+    end
+
     aligned_addr = addr & ~3
     aligned_word = load32(aligned_addr)
+
     case addr & 3
     when 0 then v = (cur_v & 0x00FFFFFF) | (aligned_word << 24)
     when 1 then v = (cur_v & 0x0000FFFF) | (aligned_word << 16)
     when 2 then v = (cur_v & 0x000000FF) | (aligned_word << 8)
     when 3 then v = (cur_v & 0x00000000) | (aligned_word << 0)
-    else
-      raise "LWL unreachable!"
+    else raise "LWL unreachable!"
     end
     @load = {t, v}
   end
@@ -375,11 +420,11 @@ class CPU
   end
 
   def op_cop3(instruction)
-    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
+    exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_cop1(instruction)
-    @cop0.exception(Exception::CoprocessorError, @current_pc, @delaybool)
+    exception(Exception::CoprocessorError, @current_pc, @delaybool)
   end
 
   def op_xori(instruction)
@@ -398,7 +443,7 @@ class CPU
     t = read_reg(t)
     v = s &- t
     if ((v ^ s) & (s ^ t)) & 0x80000000 != 0
-      @cop0.exception(Exception::Overflow, @current_pc, @delaybool)
+      exception(Exception::Overflow, @current_pc, @delaybool)
     else
       set_reg(d, v)
     end
@@ -415,7 +460,7 @@ class CPU
   end
 
   def op_break(instruction)
-    @cop0.exception(Exception::Break, @current_pc, @delaybool)
+    exception(Exception::Break, @current_pc, @delaybool)
   end
 
   def op_srlv(instruction)
@@ -465,8 +510,12 @@ class CPU
     t = @t
     s = @s
     addr = read_reg(s) &+ i
-    v = load16(addr).to_i16!
-    @load = {t, v.to_u32}
+    if addr % 2 == 0
+      v = load16(addr).to_i16!
+      @load = {t, v.to_u32}
+    else
+      exception(Exception::LoadAddressError, @current_pc, @delaybool)
+    end
   end
 
   def op_sllv(instruction)
@@ -486,12 +535,12 @@ class CPU
       v = load16(addr)
       @load = {t, v.to_u32}
     else
-      @cop0.exception(Exception::LoadAddressError, @current_pc, @delaybool)
+      exception(Exception::LoadAddressError, @current_pc, @delaybool)
     end
   end
 
   def op_syscall(instruction)
-    @cop0.exception(Exception::SysCall, @current_pc, @delaybool)
+    exception(Exception::SysCall, @current_pc, @delaybool)
   end
 
   def op_mthi(instruction)
@@ -572,8 +621,8 @@ class CPU
       @hi = 0
       @lo = 0x80000000
     else
-      @hi = (n % d).to_u32!
-      @lo = (n // d).to_u32!
+      @hi = n.remainder(d).to_u32!
+      @lo = (n / d).to_u32!
     end
   end
 
@@ -595,7 +644,7 @@ class CPU
   end
 
   def op_slti(instruction)
-    i = imm_se(instruction)
+    i = imm_se(instruction).to_i32!
     s = @s
     t = @t
     v = read_reg(s).to_i32!
@@ -607,15 +656,15 @@ class CPU
     i = imm_se(instruction)
     s = @s
     is_bgez = (instruction >> 16) & 1
-    is_link = (instruction >> 20) & 1
+    is_link = (instruction >> 17) & 0xF == 0x8
     v = read_reg(s).to_i32!
     temp = v < 0 ? 1_u32 : 0_u32
     temp = temp ^ is_bgez
+    if is_link
+      ra = @next_pc
+      set_reg(31, ra)
+    end
     if temp != 0
-      if is_link != 0
-        ra = @next_pc
-        set_reg(31, ra)
-      end
       branch(i)
     end
   end
@@ -660,13 +709,13 @@ class CPU
     s = @s
     t = @t
     d = @d
-    s = read_reg(s)
-    t = read_reg(t)
-    v = s &+ t
-    if ((v ^ s) & (v ^ t)) & 0x80000000 != 0
-      @cop0.exception(Exception::Overflow, @current_pc, @delaybool)
-    else
-      set_reg(d, v.to_u32!)
+    s = read_reg(s).to_i32!
+    t = read_reg(t).to_i32!
+    begin
+      v = s + t
+      set_reg(d, (s &+ t).to_u32!)
+    rescue ex
+      exception(Exception::Overflow, @current_pc, @delaybool)
     end
   end
 
@@ -692,10 +741,8 @@ class CPU
     t = @t
     s = @s
     addr = read_reg(s) &+ i
-    v = load8(addr).to_u32
-    sign_bit = 1 << 7
-    v = (v & (sign_bit - 1)) &- (v & sign_bit)
-    @load = {t, v}
+    v = load8(addr).to_i8!
+    @load = {t, v.to_u32!}
   end
 
   def op_jr(instruction)
@@ -744,7 +791,7 @@ class CPU
         v = read_reg(t) & 0xFFFF
         store16(addr, v.to_u16)
       else
-        @cop0.exception(Exception::StoreAddressError, @current_pc, @delaybool)
+        exception(Exception::StoreAddressError, @current_pc, @delaybool)
       end
     end
   end
@@ -777,7 +824,7 @@ class CPU
         v = load32(addr)
         @load = {t, v}
       else
-        @cop0.exception(Exception::LoadAddressError, @current_pc, @delaybool)
+        exception(Exception::LoadAddressError, @current_pc, @delaybool)
       end
     end
   end
@@ -791,7 +838,7 @@ class CPU
     s = read_reg(s).to_u64
     v = s + i
     if ((v ^ s) & (v ^ i)) & 0x80000000 != 0
-      @cop0.exception(Exception::Overflow, @current_pc, @delaybool)
+      exception(Exception::Overflow, @current_pc, @delaybool)
     else
       v &= 0xFFFFFFFF
       set_reg(t, v.to_u32)
@@ -822,6 +869,7 @@ class CPU
     cpu_r = @t
     cop_r = @d
     case cop_r
+    when 6, 7, 8 then v = 0_u32 # random jumps, DCIC, exception writes
     when 12 then v = @cop0.sr
     when 13 then v = @cop0.cause
     when 14 then v = @cop0.epc
@@ -891,11 +939,11 @@ class CPU
     t = @t
     s = @s
     addr = read_reg(s) &+ i
+    v = read_reg(t)
     if addr % 4 == 0
-      v = read_reg(t)
       store32(addr, v)
     else
-      @cop0.exception(Exception::StoreAddressError, @current_pc, @delaybool)
+      exception(Exception::StoreAddressError, @current_pc, @delaybool)
     end
   end
 

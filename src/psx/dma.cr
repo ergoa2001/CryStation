@@ -121,7 +121,7 @@ class DmaChannel
   end
 end
 
-struct Dma
+class Dma
   enum Port
     MdecIn
     MdecOut

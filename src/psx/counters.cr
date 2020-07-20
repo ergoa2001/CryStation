@@ -1,14 +1,14 @@
-struct Counter
+class Counter
   def initialize
     @count = 0_u32
   end
 
   def reset
-    @count = 0
+    @count = 0_u32
   end
 
   def increment
-    @count &+= 1
+    @count &+= 1_u32
   end
 
   def get : UInt32
@@ -16,7 +16,7 @@ struct Counter
   end
 end
 
-struct Counters
+class Counters
   def initialize
     # Incremented every time a new frame is drawn
     @frame = Counter.new

@@ -1,5 +1,5 @@
-struct Cop0
-  enum Exception
+class Cop0
+  enum Exception : UInt32
     Interrupt = 0x0
     LoadAddressError= 0x4
     StoreAddressError = 0x5
@@ -7,7 +7,7 @@ struct Cop0
     Break = 0x9
     IllegalInstruction = 0xA
     CoprocessorError = 0xB
-    Overflow= 0xC
+    Overflow = 0xC
   end
 
   def initialize(irq : InterruptState)
@@ -43,22 +43,28 @@ struct Cop0
     @sr & 0x10000 != 0
   end
 
-  def exception(cause, pc : UInt32, in_delay_slot : Bool) : UInt32
+  def exception(causes, pc : UInt32, in_delay_slot : Bool) : UInt32
+
     mode = @sr & 0x3F
+
     @sr &= ~0x3F
     @sr |= (mode << 2) & 0x3F
+
     @cause &= ~0x7C
-    @cause = cause.value << 2
+    @cause |= causes.value << 2
+
     if in_delay_slot
-      @epc = @epc &- 4
+      @epc = pc &- 4
       @cause |= 1 << 31
     else
       @epc = pc
       @cause &= ~(1 << 31)
     end
-    case @sr & (1 << 22) != 0
-    when true then 0xBFC00180_u32
-    else 0x80000080_u32
+
+    if @sr & (1 << 22) != 0
+      0xBFC00180_u32
+    else
+      0x80000080_u32
     end
   end
 
@@ -73,8 +79,8 @@ struct Cop0
   end
 
   def irq_active : Bool
-    cause = @cause
-    pending = (cause & @sr) & 0x700
+    causes = cause
+    pending = (causes & @sr) & 0x700
     irq_enabled && pending != 0
   end
 

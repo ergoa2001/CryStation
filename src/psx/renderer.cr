@@ -1,6 +1,6 @@
 require "crsfml"
 
-struct Buffer
+class Buffer
   @vertex_buffer_len : UInt32
   @memory : Array(UInt16)
   def initialize(datanum : UInt32)
@@ -82,7 +82,32 @@ class Renderer
     @vram[y][x]
   end
 
-  def draw_textures(positions)
+  def copy_rect(source, dest, size)
+    width = size[0]
+    height = size[1]
+    x1 = source[0]
+    x2 = dest[0]
+    y1 = source[1]
+    y2 = dest[1]
+    (0..height).each do |y|
+      @vram[y2 + y][x2..x2 + width] = @vram[y1 + y][x1..x1 + width]
+    end
+  end
+
+  def fill_rectangle(position, size, color)
+    newcolor = 0_u16 << 15
+    newcolor |= (color[0] >> 3) << 10
+    newcolor |= (color[1] >> 3) << 5
+    newcolor |= color[2] >> 3
+    pixels = [color[0], color[1], color[2], 255_u8]*size[0]*size[1]
+    (0..size[1]).each do |y|
+      @vram[position[1] + y][position[0]...position[0]+size[0]] = Array.new(size[0], newcolor)
+    end
+    #@texture.update(pixels.to_unsafe.as(UInt8*), size[0], size[1], position[0], position[1])
+    draw
+  end
+
+  def draw_textures(positions, alpha)
     xlen = positions[1][0] - positions[0][0]
     ylen = positions[2][1] - positions[0][1]
     (0...ylen).each do |y|
@@ -103,7 +128,7 @@ class Renderer
         if pixel != 0
           shape = SF::RectangleShape.new(SF.vector2(1, 1))
           shape.position = SF.vector2(positions[0][0] + x, positions[0][1] + y)
-          shape.fill_color = SF::Color.new(r, g, b)
+          shape.fill_color = SF::Color.new(r, g, b, alpha)
           @window.draw shape
         end
       end
@@ -113,6 +138,10 @@ class Renderer
 
   def load_image(top_left, resolution, buffer : Array(UInt16))
     pixels = Array(UInt8).new
+    x1 = top_left[0].to_u32
+    y1 = top_left[1].to_u32
+    width = resolution[0]
+    height = resolution[1]
     buffer.each do |pixel|
       a = 255_u8 #((pixel & 0x8000) >> 15) == 1 ? 255_u8 : 255_u8 #255_u8
       r = ((pixel << 3) & 0xf8).to_u8
@@ -123,10 +152,10 @@ class Renderer
       pixels << b
       pixels << a
     end
-    @texture.update(pixels.to_unsafe.as(UInt8*), resolution[0], resolution[1], top_left[0], top_left[1])
+    @texture.update(pixels.to_unsafe.as(UInt8*), width, height, x1, y1)
 
-    (top_left[1]...top_left[1] + resolution[1]).each do |y|
-      @vram[y][top_left[0]...top_left[0]+resolution[0]] = buffer[(y-top_left[1])*resolution[0]...(y-top_left[1])*resolution[0] + resolution[0]]
+    (0...height).each do |y|
+      @vram[y + y1][x1...x1+width] = buffer[y*resolution[0]...y*resolution[0] + width]
     end
   end
 
@@ -134,6 +163,7 @@ class Renderer
     if @nvertices + 3 > VERTEX_BUFFER_LEN
       puts "Vertex buffer full, drawing"
       draw
+      @nvertices = 0
     end
     (0...3).each do |i|
       @vertices[@nvertices] = vertices[i]
@@ -144,6 +174,7 @@ class Renderer
   def push_quad(vertices)
     if @nvertices + 6 > VERTEX_BUFFER_LEN
       draw
+      @nvertices = 0
     end
     (0...3).each do |i|
       @vertices[@nvertices] = vertices[i]
@@ -155,6 +186,14 @@ class Renderer
     end
   end
 
+  def draw_line(positions, colors)
+    line = [
+      SF::Vertex.new(SF.vector2(positions[0][0], positions[0][1]), SF::Color.new(colors[0][0], colors[0][1], colors[0][2], colors[0][3])),
+      SF::Vertex.new(SF.vector2(positions[1][0], positions[1][1]), SF::Color.new(colors[1][0], colors[1][1], colors[1][2], colors[1][3]))
+    ]
+    @window.draw(line, SF::Lines)
+  end
+
   def draw
     while event = @window.poll_event
       case event
@@ -163,19 +202,19 @@ class Renderer
         exit 0
       end
     end
-
-    @window.clear
-    (0...@nvertices//3).each do |j|
-      triangle = SF::VertexArray.new(SF::Triangles, 3)
-      (0...3).each do |i|
-        triangle[i] = @vertices[j*3 + i]
+    if @nvertices > 0
+      @window.clear
+      @window.draw @sprite
+      (0...@nvertices//3).each do |j|
+        triangle = SF::VertexArray.new(SF::Triangles, 3)
+        (0...3).each do |i|
+          triangle[i] = @vertices[j*3 + i]
+        end
+        @window.draw triangle
       end
-      @window.draw triangle
+      @window.display
+      @nvertices = 0
+      @framecount += 1
     end
-    @window.draw @sprite
-    @window.display
-    #@nvertices = 0 #temp hack
-    @framecount += 1
-    #@window.title = "CryStation - FPS: #{(@framecount / (Time.monotonic - @starttime).seconds).to_i}"
   end
 end
